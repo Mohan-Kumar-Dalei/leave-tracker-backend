@@ -6,7 +6,7 @@ import { validate } from '../middleware/validate.js';
 import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES } from '../models/Leave.js';
 import LeaveType from '../models/LeaveType.js';
-import { parseDay, todayString, yearRange } from '../utils/dates.js';
+import { monthRange, parseDay, todayString, yearRange } from '../utils/dates.js';
 import { conflict, notFound } from '../utils/http.js';
 import { day, idParams, year } from '../utils/schemas.js';
 
@@ -106,5 +106,44 @@ router.delete('/holidays/:id', requireAdmin, validate({ params: idParams }), asy
   if (!holiday) throw notFound('That holiday was not found.');
   res.status(204).end();
 });
+
+// Open to everyone so people can check who is away before applying. Only the
+// fields listed here leave the server: colleagues see a name and dates, never a
+// reason, and only an admin sees the leave type.
+router.get(
+  '/team-calendar',
+  validate({ query: z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }) }),
+  async (req, res) => {
+    const [yearPart, monthPart] = req.valid.query.month.split('-').map(Number);
+    const { start, end } = monthRange(yearPart, monthPart - 1);
+    const isAdmin = req.user.role === 'admin';
+
+    const [leaves, holidays] = await Promise.all([
+      Leave.find({ status: { $in: ACTIVE_STATUSES }, from: { $lte: end }, to: { $gte: start } })
+        .populate('user', 'name')
+        .populate('leaveType', 'name')
+        .sort({ from: 1 }),
+      Holiday.find({ date: { $gte: start, $lte: end } }),
+    ]);
+
+    res.json({
+      today: todayString(env.TIMEZONE),
+      holidays,
+      leaves: leaves.map((leave) => {
+        const { id, from, to, session, days, status } = leave.toJSON();
+        return {
+          id,
+          name: leave.user?.name,
+          from,
+          to,
+          session,
+          days,
+          status,
+          ...(isAdmin ? { leaveType: leave.leaveType?.name } : {}),
+        };
+      }),
+    });
+  },
+);
 
 export default router;

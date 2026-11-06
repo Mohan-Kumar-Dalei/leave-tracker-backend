@@ -36,6 +36,12 @@ export function pushToUser(userId, event, data) {
   for (const res of set) send(res, event, data);
 }
 
+export function pushToEveryone(event, data) {
+  for (const set of streams.values()) {
+    for (const res of set) send(res, event, data);
+  }
+}
+
 export function closeAllStreams() {
   for (const set of streams.values()) {
     for (const res of set) res.end();

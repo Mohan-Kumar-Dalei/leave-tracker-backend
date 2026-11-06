@@ -243,8 +243,7 @@ router.patch(
       link: '/requests',
     });
 
-    const admins = await getActiveAdmins();
-    broadcastChange([leave.user.id, ...admins.map((admin) => admin.id)]);
+    broadcastChange();
 
     sendMail({
       to: leave.user.email,
@@ -255,40 +254,6 @@ router.patch(
         reviewerName: req.user.name,
       }),
     });
-  },
-);
-
-/* Team calendar */
-
-router.get(
-  '/calendar',
-  validate({ query: z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }) }),
-  async (req, res) => {
-    const [yearPart, monthPart] = req.valid.query.month.split('-').map(Number);
-    const { start, end } = monthRange(yearPart, monthPart - 1);
-
-    const [leaves, holidays, imported] = await Promise.all([
-      Leave.find({ status: { $in: ['approved', 'pending'] }, from: { $lte: end }, to: { $gte: start } })
-        .populate('user', 'name employeeId')
-        .populate('leaveType', 'name code')
-        .sort({ from: 1 }),
-      Holiday.find({ date: { $gte: start, $lte: end } }),
-      ImportedUsage.find({ year: yearPart, month: monthPart })
-        .populate('user', 'name employeeId')
-        .populate('leaveType', 'name')
-        .sort({ days: -1 }),
-    ]);
-
-    // The old sheet has monthly totals only, so these cannot go on a date.
-    const earlier = imported.map((row) => ({
-      id: row.id,
-      name: row.user?.name,
-      employeeId: row.user?.employeeId,
-      leaveType: row.leaveType?.name,
-      days: row.days,
-    }));
-
-    res.json({ leaves, holidays, earlier });
   },
 );
 
@@ -455,7 +420,7 @@ router.post(
       body: reason,
       link: '/',
     });
-    broadcastChange([user.id]);
+    broadcastChange();
   },
 );
 

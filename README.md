@@ -39,7 +39,7 @@ npm run import:roster -- data/roster.local.json
 
 Add `--remove-demo` to also delete the sample accounts. It can be run again: existing people keep their password and their monthly usage is replaced. No mail is sent.
 
-Monthly usage from the old sheet has no dates, so it is stored as monthly totals in `ImportedUsage`. It counts against the balance and shows in the month by month chart, but not in the leave lists or the calendar.
+Monthly usage from the old sheet has no dates, so it is stored as monthly totals in `ImportedUsage`. It counts against the balance and shows in the month by month chart, but not in the leave lists or the team calendar. The team calendar only shows leave applied for in this app.
 
 ## Leave rules
 
@@ -82,7 +82,8 @@ All routes are under `/api`. Everything except sign in and password reset needs 
 | GET, POST, PATCH, DELETE | `/holidays` | Holidays, writes are admin only |
 | GET, PATCH | `/notifications`, `/notifications/read-all`, `/notifications/:id/read` | Bell |
 | GET | `/notifications/stream` | Live updates |
-| GET | `/admin/overview`, `/admin/leaves`, `/admin/leaves.csv`, `/admin/calendar` | Admin views |
+| GET | `/team-calendar` | Who is away in a month, for everyone. Names, dates and status only; admins also get the leave type |
+| GET | `/admin/overview`, `/admin/leaves`, `/admin/leaves.csv` | Admin views |
 | PATCH | `/admin/leaves/:id/review` | Approve or reject |
 | GET, POST, PATCH | `/admin/employees` | People |
 | POST | `/admin/employees/:id/invite`, `/admin/employees/:id/adjustments` | Invite link, balance change |

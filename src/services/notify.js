@@ -1,6 +1,6 @@
 import Notification from '../models/Notification.js';
 import User from '../models/User.js';
-import { pushToUser } from './events.js';
+import { pushToEveryone, pushToUser } from './events.js';
 
 export async function notifyUsers(userIds, notification) {
   if (!userIds.length) return;
@@ -16,7 +16,9 @@ export function getActiveAdmins() {
   return User.find({ role: 'admin', isActive: true }).select('name email');
 }
 
-// Tells open dashboards to refetch, without a bell notification.
-export function broadcastChange(userIds) {
-  for (const userId of userIds) pushToUser(userId, 'leave-changed', {});
+// Tells every open dashboard to refetch, without a bell notification. The team
+// calendar is shared, so one person's leave changes what everyone sees. The
+// event carries no leave data.
+export function broadcastChange() {
+  pushToEveryone('leave-changed', {});
 }

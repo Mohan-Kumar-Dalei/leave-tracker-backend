@@ -68,7 +68,7 @@ router.post('/', applyLimiter, validate({ body: applySchema }), async (req, res)
     },
   );
 
-  broadcastChange([...reviewers.map((admin) => admin.id), req.user.id]);
+  broadcastChange();
 
   const mail = newRequestMail({ employee: req.user, leave: leaveJson, typeName: leaveType.name });
   for (const admin of reviewers) sendMail({ to: admin.email, ...mail });
@@ -117,7 +117,7 @@ router.patch('/:id/cancel', validate({ params: idParams }), async (req, res) => 
     },
   );
 
-  broadcastChange([...adminIds, leave.user.id]);
+  broadcastChange();
 
   const mail = cancelledMail({
     employee: leave.user,

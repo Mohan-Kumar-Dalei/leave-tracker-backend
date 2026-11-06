@@ -337,6 +337,54 @@ describe('review flow', () => {
   });
 });
 
+describe('team calendar', () => {
+  const month = '2031-03';
+
+  it('shows colleagues leave to employees without private details', async () => {
+    const owner = await signIn(await makeUser({ name: 'Asha Rao' }));
+    const colleague = await signIn(await makeUser());
+    await apply(owner, { from: '2031-03-03', to: '2031-03-04', reason: 'Private family matter' }).expect(201);
+
+    const { body } = await colleague.get(`/api/team-calendar?month=${month}`).expect(200);
+    assert.equal(body.leaves.length, 1);
+    assert.equal(body.leaves[0].name, 'Asha Rao');
+    assert.equal(body.leaves[0].from, '2031-03-03');
+    assert.equal(body.leaves[0].status, 'pending');
+    assert.equal(body.leaves[0].reason, undefined);
+    assert.equal(body.leaves[0].leaveType, undefined);
+    assert.equal(JSON.stringify(body).includes('Private family matter'), false);
+    assert.equal(JSON.stringify(body).includes('@example.com'), false);
+  });
+
+  it('adds the leave type for an admin', async () => {
+    const owner = await signIn(await makeUser());
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    await apply(owner, { from: '2031-03-03', to: '2031-03-03' }).expect(201);
+
+    const { body } = await admin.get(`/api/team-calendar?month=${month}`).expect(200);
+    assert.equal(body.leaves[0].leaveType, 'Casual');
+  });
+
+  it('leaves out rejected and cancelled requests', async () => {
+    const owner = await signIn(await makeUser());
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const rejected = await apply(owner, { from: '2031-03-03', to: '2031-03-03' }).expect(201);
+    const cancelled = await apply(owner, { from: '2031-03-05', to: '2031-03-05' }).expect(201);
+
+    await admin.patch(`/api/admin/leaves/${rejected.body.leave.id}/review`).send({ decision: 'rejected', note: 'Busy week' }).expect(200);
+    await owner.patch(`/api/leaves/${cancelled.body.leave.id}/cancel`).expect(200);
+
+    const { body } = await owner.get(`/api/team-calendar?month=${month}`).expect(200);
+    assert.equal(body.leaves.length, 0);
+  });
+
+  it('needs a session and a valid month', async () => {
+    await request(app).get(`/api/team-calendar?month=${month}`).expect(401);
+    const agent = await signIn(await makeUser());
+    await agent.get('/api/team-calendar?month=2031-13').expect(400);
+  });
+});
+
 describe('csv export', () => {
   it('neutralises spreadsheet formulas in typed text', () => {
     const csv = toCsv(['Reason'], [['=HYPERLINK("http://evil")']]);
