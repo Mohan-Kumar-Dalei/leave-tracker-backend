@@ -267,14 +267,28 @@ router.get(
     const [yearPart, monthPart] = req.valid.query.month.split('-').map(Number);
     const { start, end } = monthRange(yearPart, monthPart - 1);
 
-    const [leaves, holidays] = await Promise.all([
+    const [leaves, holidays, imported] = await Promise.all([
       Leave.find({ status: { $in: ['approved', 'pending'] }, from: { $lte: end }, to: { $gte: start } })
         .populate('user', 'name employeeId')
-        .populate('leaveType', 'name code'),
+        .populate('leaveType', 'name code')
+        .sort({ from: 1 }),
       Holiday.find({ date: { $gte: start, $lte: end } }),
+      ImportedUsage.find({ year: yearPart, month: monthPart })
+        .populate('user', 'name employeeId')
+        .populate('leaveType', 'name')
+        .sort({ days: -1 }),
     ]);
 
-    res.json({ leaves, holidays });
+    // The old sheet has monthly totals only, so these cannot go on a date.
+    const earlier = imported.map((row) => ({
+      id: row.id,
+      name: row.user?.name,
+      employeeId: row.user?.employeeId,
+      leaveType: row.leaveType?.name,
+      days: row.days,
+    }));
+
+    res.json({ leaves, holidays, earlier });
   },
 );
 
