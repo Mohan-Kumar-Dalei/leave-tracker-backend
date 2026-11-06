@@ -330,6 +330,46 @@ describe('review flow', () => {
     assert.equal((await waitForUnread(employee)).unread, 1);
   });
 
+  it('lets an admin set the password of a new employee', async () => {
+    const agent = await signIn(await makeUser({ role: 'admin' }));
+    const person = { name: 'New Joiner', email: 'new.joiner@example.com', employeeId: 'NEW-1' };
+
+    await agent.post('/api/admin/employees').send({ ...person, password: 'short1' }).expect(400);
+
+    const { body } = await agent
+      .post('/api/admin/employees')
+      .send({ ...person, password: 'Joiner@2026' })
+      .expect(201);
+    assert.equal(body.user.passwordHash, undefined);
+    assert.equal(JSON.stringify(body).includes('Joiner@2026'), false);
+
+    await request(app)
+      .post('/api/auth/login')
+      .send({ email: person.email, password: 'Joiner@2026' })
+      .expect(200);
+  });
+
+  it('still adds an employee with no password, who cannot sign in yet', async () => {
+    const agent = await signIn(await makeUser({ role: 'admin' }));
+    const person = { name: 'Invited Person', email: 'invited@example.com', employeeId: 'NEW-2' };
+
+    await agent.post('/api/admin/employees').send(person).expect(201);
+    await request(app)
+      .post('/api/auth/login')
+      .send({ email: person.email, password: 'Anything@2026' })
+      .expect(401);
+  });
+
+  it('leaves admins out of the employee list', async () => {
+    const admin = await makeUser({ role: 'admin', name: 'Head Admin' });
+    await makeUser({ name: 'Regular Person' });
+    const agent = await signIn(admin);
+
+    const { body } = await agent.get('/api/admin/employees?status=all').expect(200);
+    assert.deepEqual(body.items.map((user) => user.name), ['Regular Person']);
+    assert.equal(body.total, 1);
+  });
+
   it('keeps one active admin', async () => {
     const onlyAdmin = await makeUser({ role: 'admin' });
     const agent = await signIn(onlyAdmin);

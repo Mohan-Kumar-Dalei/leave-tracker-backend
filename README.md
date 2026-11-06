@@ -82,10 +82,10 @@ All routes are under `/api`. Everything except sign in and password reset needs 
 | GET, POST, PATCH, DELETE | `/holidays` | Holidays, writes are admin only |
 | GET, PATCH | `/notifications`, `/notifications/read-all`, `/notifications/:id/read` | Bell |
 | GET | `/notifications/stream` | Live updates |
-| GET | `/team-calendar` | Who is away in a month, for everyone. Names, dates and status only; admins also get the leave type |
+| GET | `/team-calendar` | Who is away in a month, shown to admins as a page and to employees in the calendar view of My leave. Names, dates and status only; admins also get the leave type |
 | GET | `/admin/overview`, `/admin/leaves`, `/admin/leaves.csv` | Admin views |
 | PATCH | `/admin/leaves/:id/review` | Approve or reject |
-| GET, POST, PATCH | `/admin/employees` | People |
+| GET, POST, PATCH | `/admin/employees` | Employees. The list leaves out admins. A new employee can be given a password, otherwise they get a set password link by mail |
 | POST | `/admin/employees/:id/invite`, `/admin/employees/:id/adjustments` | Invite link, balance change |
 
 ## Deploy

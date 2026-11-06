@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { Router } from 'express';
 import { z } from 'zod';
 import env from '../config/env.js';
@@ -24,10 +25,11 @@ import {
   paginate,
   toCsv,
 } from '../utils/http.js';
-import { day, email, idParams, limit, objectId, page, year } from '../utils/schemas.js';
+import { day, email, idParams, limit, objectId, page, password, year } from '../utils/schemas.js';
 
 const router = Router();
 
+const BCRYPT_COST = 12;
 const INVITE_TTL_MS = 48 * 60 * 60 * 1000;
 const employeeFields = 'name email employeeId department designation';
 const typeFields = 'name code tracksBalance restrictedHolidayOnly';
@@ -293,7 +295,8 @@ router.get(
     const { q, status = 'active' } = req.valid.query;
     const pageInfo = paginate(req.valid.query);
 
-    const filter = {};
+    // Admins run the system and are not part of the employee list.
+    const filter = { role: 'employee' };
     if (status !== 'all') filter.isActive = status === 'active';
     if (q) {
       const pattern = new RegExp(escapeRegex(q), 'i');
@@ -309,12 +312,24 @@ router.get(
   },
 );
 
-router.post('/employees', validate({ body: z.strictObject(employeeBody) }), async (req, res) => {
-  const { joinedOn, ...rest } = req.valid.body;
-  const user = await User.create({ ...rest, joinedOn: joinedOn ? parseDay(joinedOn) : undefined });
-  await issueInvite(user);
-  res.status(201).json({ user });
-});
+// With a password the employee can sign in straight away. Without one they get
+// a link by mail to choose their own. A password is never sent by mail.
+router.post(
+  '/employees',
+  validate({ body: z.strictObject({ ...employeeBody, password: password.optional() }) }),
+  async (req, res) => {
+    const { joinedOn, password: chosenPassword, ...rest } = req.valid.body;
+
+    const user = await User.create({
+      ...rest,
+      joinedOn: joinedOn ? parseDay(joinedOn) : undefined,
+      ...(chosenPassword ? { passwordHash: await bcrypt.hash(chosenPassword, BCRYPT_COST) } : {}),
+    });
+
+    if (!chosenPassword) await issueInvite(user);
+    res.status(201).json({ user });
+  },
+);
 
 router.get(
   '/employees/:id',
