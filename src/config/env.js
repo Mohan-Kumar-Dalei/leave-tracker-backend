@@ -35,8 +35,8 @@ const schema = z.object({
 
   SEED_ADMIN_NAME: z.string().default('Admin'),
   SEED_ADMIN_EMAIL: z.string().email().optional(),
-  SEED_ADMIN_PASSWORD: z.string().optional(),
-  SEED_EMPLOYEE_PASSWORD: z.string().optional(),
+  SEED_ADMIN_PASSWORD_HASH: z.string().optional(),
+  SEED_EMPLOYEE_PASSWORD_HASH: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

@@ -11,6 +11,8 @@ const balanceAdjustmentSchema = new mongoose.Schema(
     days: { type: Number, required: true, min: -365, max: 365 },
     reason: { type: String, required: true, trim: true, maxlength: 240 },
     createdBy: { type: ObjectId, ref: 'User', required: true },
+    // Set when the employee closes the banner. An edit clears it again.
+    dismissedAt: { type: Date },
   },
   {
     timestamps: true,

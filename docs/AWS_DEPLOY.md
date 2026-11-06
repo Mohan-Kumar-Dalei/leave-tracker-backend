@@ -129,12 +129,9 @@ CLIENT_ORIGINS=http://YOUR_IP
 APP_URL=http://YOUR_IP
 COOKIE_SECURE=false
 TRUST_PROXY=1
-SEED_ADMIN_NAME=HR Admin
-SEED_ADMIN_EMAIL=apna-admin-email
-SEED_ADMIN_PASSWORD=ek-strong-password
 ```
 
-Pehla admin, leave types aur holidays banao, aur app start karo:
+Leave types aur holidays banao, aur app start karo:
 
 ```bash
 chmod 600 .env
@@ -146,20 +143,21 @@ pm2 startup
 
 `pm2 startup` ek `sudo env PATH=...` command print karega. Use copy karke chalao, taaki reboot par app apne aap start ho.
 
-Real employees bhi import karo. Yeh file Git me nahi hai, isliye apne Windows PC se server par copy karni hogi. PowerShell me, backend folder ke andar se:
+Admin aur real employees import karo. Yeh dono files Git me nahi hain, isliye apne Windows PC se server par copy karni hongi. Passwords inme sirf bcrypt hash ke roop me hain. PowerShell me, backend folder ke andar se:
 
 ```powershell
 scp -i leave-tracker-key.pem data/roster.local.json ubuntu@YOUR_IP:/var/www/leave-tracker/api/data/
+scp -i leave-tracker-key.pem .env.passwords ubuntu@YOUR_IP:/var/www/leave-tracker/api/
 ```
 
 Pehle server par `mkdir -p /var/www/leave-tracker/api/data` chala lena. Phir server par:
 
 ```bash
 npm run import:roster -- data/roster.local.json
-rm data/roster.local.json
+rm data/roster.local.json .env.passwords
 ```
 
-Seed ke baad `.env` se `SEED_ADMIN_PASSWORD` hata do. Phir check karo:
+Phir check karo:
 
 ```bash
 curl http://127.0.0.1:5000/api/health

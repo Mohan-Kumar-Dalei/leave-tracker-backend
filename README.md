@@ -11,7 +11,7 @@ npm install
 cp .env.example .env
 ```
 
-Fill in `JWT_ACCESS_SECRET`, `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` and `SEED_EMPLOYEE_PASSWORD`, then:
+Fill in `JWT_ACCESS_SECRET`, `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD_HASH` and `SEED_EMPLOYEE_PASSWORD_HASH`, then:
 
 ```bash
 npm run seed:demo
@@ -30,7 +30,7 @@ The tests use a separate `leave_tracker_test` database on the same MongoDB.
 
 ## Importing the real team
 
-Real names, emails and leave numbers stay out of Git. They live in `data/roster.local.json`, and the `data/` folder is ignored. The file format is described at the top of `src/importRoster.js`.
+Real names, emails and leave numbers stay out of Git. They live in `data/roster.local.json`, and the `data/` folder is ignored. Starting passwords are bcrypt hashes in `.env.passwords`, which is also ignored. Both formats are described at the top of `src/importRoster.js`.
 
 ```bash
 npm run seed
@@ -60,7 +60,8 @@ Monthly usage from the old sheet has no dates, so it is stored as monthly totals
 | Headers | helmet with a strict CSP, HSTS once `COOKIE_SECURE=true` |
 | Rate limits | Separate limits for the API, sign in, password mails and new requests, plus nginx |
 | Sessions | Short access JWT and rotating refresh token in httpOnly SameSite=Strict cookies, stolen refresh token detection |
-| Passwords | bcrypt cost 12, length and content rules, account lock after 5 failures, same error for unknown emails |
+| Passwords | Only bcrypt hashes are stored, cost 12, with length and content rules, account lock after 5 failures, same error for unknown emails. Login reads the hash from MongoDB, so a changed password takes effect at once |
+| Secrets | Env files are read only at start up. No route or static folder serves files, and a test checks that |
 | CSRF | SameSite=Strict cookies plus an Origin allowlist on every write |
 | Input | Strict zod schemas on every route, MongoDB operator stripping, 32 KB body limit, escaped search patterns |
 | Access | User reloaded on each request, so deactivation and password changes apply at once |
@@ -80,13 +81,15 @@ All routes are under `/api`. Everything except sign in and password reset needs 
 | PATCH | `/leaves/:id/cancel` | Cancel |
 | GET, POST, PATCH | `/leave-types` | Leave types, writes are admin only |
 | GET, POST, PATCH, DELETE | `/holidays` | Holidays, writes are admin only |
-| GET, PATCH | `/notifications`, `/notifications/read-all`, `/notifications/:id/read` | Bell |
+| GET, PATCH | `/notifications`, `/notifications/read-all`, `/notifications/:id/read` | Bell, unread items only |
 | GET | `/notifications/stream` | Live updates |
 | GET | `/team-calendar` | Who is away in a month, shown to admins as a page and to employees in the calendar view of My leave. Names, dates and status only; admins also get the leave type |
-| GET | `/admin/overview`, `/admin/leaves`, `/admin/leaves.csv` | Admin views |
+| GET | `/admin/overview`, `/admin/schedule`, `/admin/leaves`, `/admin/leaves.csv` | Admin views |
 | PATCH | `/admin/leaves/:id/review` | Approve or reject |
 | GET, POST, PATCH | `/admin/employees` | Employees. The list leaves out admins. A new employee can be given a password, otherwise they get a set password link by mail |
-| POST | `/admin/employees/:id/invite`, `/admin/employees/:id/adjustments` | Invite link, balance change |
+| POST | `/admin/employees/:id/invite` | Invite link |
+| POST, PATCH, DELETE | `/admin/employees/:id/adjustments` | Add, edit or remove a balance change. Days already booked cannot be taken away |
+| PATCH | `/me/adjustments/:id/dismiss` | Close the balance change banner |
 
 ## Deploy
 

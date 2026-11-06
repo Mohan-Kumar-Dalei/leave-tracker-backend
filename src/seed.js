@@ -1,4 +1,3 @@
-import bcrypt from 'bcryptjs';
 import env from './config/env.js';
 import { connectDb, disconnectDb } from './config/db.js';
 import BalanceAdjustment from './models/BalanceAdjustment.js';
@@ -60,9 +59,9 @@ async function seedCatalog() {
 }
 
 async function seedAdmin() {
-  const { SEED_ADMIN_EMAIL: email, SEED_ADMIN_PASSWORD: password, SEED_ADMIN_NAME: name } = env;
-  if (!email || !password) {
-    console.log('Skipping admin: set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD in .env');
+  const { SEED_ADMIN_EMAIL: email, SEED_ADMIN_PASSWORD_HASH: passwordHash, SEED_ADMIN_NAME: name } = env;
+  if (!email || !passwordHash) {
+    console.log('Skipping admin: set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD_HASH in .env');
     return null;
   }
 
@@ -80,7 +79,7 @@ async function seedAdmin() {
     department: 'People',
     designation: 'HR Admin',
     joinedOn: parseDay('2022-04-01'),
-    passwordHash: await bcrypt.hash(password, 12),
+    passwordHash,
   });
   console.log(`Admin created: ${email}`);
   return admin;
@@ -91,12 +90,12 @@ async function seedDemo(admin) {
     console.log('Demo data is not available in production.');
     return;
   }
-  if (!env.SEED_EMPLOYEE_PASSWORD) {
-    console.log('Skipping demo data: set SEED_EMPLOYEE_PASSWORD in .env');
+  if (!env.SEED_EMPLOYEE_PASSWORD_HASH) {
+    console.log('Skipping demo data: set SEED_EMPLOYEE_PASSWORD_HASH in .env');
     return;
   }
 
-  const passwordHash = await bcrypt.hash(env.SEED_EMPLOYEE_PASSWORD, 12);
+  const passwordHash = env.SEED_EMPLOYEE_PASSWORD_HASH;
   const people = [];
 
   for (const person of DEMO_EMPLOYEES) {

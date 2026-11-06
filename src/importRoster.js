@@ -11,11 +11,16 @@
 //     "employees": [{ "name": "...", "email": "...", "months": [12 numbers, Jan to Dec] }]
 //   }
 //
+// Starting passwords are never kept in plain text. New people need a bcrypt hash
+// in .env.passwords, which is not in Git, under a key built from their email:
+//
+//   PASSWORD_HASH_NAME_EXAMPLE_COM='$2b$12$...'
+//
 // Safe to run again: existing people keep their password, and their monthly
 // usage is replaced with what the file says. No mail is sent.
 
 import fs from 'node:fs';
-import bcrypt from 'bcryptjs';
+import dotenv from 'dotenv';
 import { connectDb, disconnectDb } from './config/db.js';
 import BalanceAdjustment from './models/BalanceAdjustment.js';
 import ImportedUsage from './models/ImportedUsage.js';
@@ -27,19 +32,31 @@ import User from './models/User.js';
 
 const DEMO_EMAIL = /@leavetracker\.test$/i;
 
-const startingPassword = (name, year) => `${name.split(' ')[0]}@${year}`;
+const HASH_FILE = '.env.passwords';
+const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$.{53}$/;
 
-async function upsertPerson(person, { role, employeeId, year }) {
+const hashKey = (email) => `PASSWORD_HASH_${email.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+
+function loadHashes() {
+  return fs.existsSync(HASH_FILE) ? dotenv.parse(fs.readFileSync(HASH_FILE)) : {};
+}
+
+async function upsertPerson(person, { role, employeeId, hashes }) {
   const email = person.email.toLowerCase();
   const existing = await User.findOne({ email });
   if (existing) return { user: existing, created: false };
+
+  const passwordHash = hashes[hashKey(email)];
+  if (!BCRYPT_HASH.test(passwordHash ?? '')) {
+    throw new Error(`${person.name} has no bcrypt hash in ${HASH_FILE}.`);
+  }
 
   const user = await User.create({
     name: person.name,
     email,
     employeeId,
     role,
-    passwordHash: await bcrypt.hash(startingPassword(person.name, year), 12),
+    passwordHash,
   });
   return { user, created: true };
 }
@@ -71,18 +88,20 @@ async function run() {
     if (person.months.length !== 12) throw new Error(`${person.name} needs 12 monthly values.`);
   }
 
+  const hashes = loadHashes();
+
   await connectDb();
 
   const leaveType = await LeaveType.findOne({ code: leaveTypeCode });
   if (!leaveType) throw new Error(`Leave type ${leaveTypeCode} not found. Run npm run seed first.`);
 
-  const adminResult = await upsertPerson(admin, { role: 'admin', employeeId: 'CON-001', year });
+  const adminResult = await upsertPerson(admin, { role: 'admin', employeeId: 'CON-001', hashes });
   console.log(`Admin ${adminResult.created ? 'created' : 'already exists'}`);
 
   let created = 0;
   for (const [index, person] of employees.entries()) {
     const employeeId = `CON-${String(index + 2).padStart(3, '0')}`;
-    const result = await upsertPerson(person, { role: 'employee', employeeId, year });
+    const result = await upsertPerson(person, { role: 'employee', employeeId, hashes });
     if (result.created) created += 1;
 
     await ImportedUsage.deleteMany({ user: result.user._id, leaveType: leaveType._id, year });

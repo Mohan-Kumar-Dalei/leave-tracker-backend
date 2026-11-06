@@ -2,13 +2,14 @@ import { Router } from 'express';
 import { z } from 'zod';
 import env from '../config/env.js';
 import { validate } from '../middleware/validate.js';
+import BalanceAdjustment from '../models/BalanceAdjustment.js';
 import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
 import { getBalances, getMonthlyUsage } from '../services/balances.js';
 import { isWeekend } from '../services/leaveDays.js';
 import { toDayString, todayString, yearRange } from '../utils/dates.js';
 import { pageMeta, paginate, toCsv } from '../utils/http.js';
-import { limit, page, year } from '../utils/schemas.js';
+import { idParams, limit, page, year } from '../utils/schemas.js';
 
 const router = Router();
 
@@ -58,13 +59,17 @@ router.get(
     const { start, end } = yearRange(selectedYear);
     const today = todayString(env.TIMEZONE);
 
-    const [balances, leaves, holidays, monthly] = await Promise.all([
+    const [balances, leaves, holidays, monthly, adjustments] = await Promise.all([
       getBalances(req.user.id, selectedYear),
       Leave.find({ user: req.user.id, year: selectedYear, status: { $in: ACTIVE_STATUSES } })
         .populate('leaveType', typeFields)
         .sort({ from: 1 }),
       Holiday.find({ date: { $gte: start, $lte: end } }).sort({ date: 1 }),
       getMonthlyUsage(req.user.id, selectedYear),
+      BalanceAdjustment.find({ user: req.user.id, year: selectedYear, dismissedAt: null })
+        .populate('leaveType', 'name')
+        .populate('createdBy', 'name')
+        .sort({ updatedAt: -1 }),
     ]);
 
     const rhBalance = balances.find((balance) => balance.leaveType.restrictedHolidayOnly);
@@ -94,6 +99,14 @@ router.get(
       absent,
       balances,
       monthly,
+      adjustments: adjustments.map((item) => ({
+        id: item.id,
+        leaveType: item.leaveType?.name,
+        days: item.days,
+        reason: item.reason,
+        by: item.createdBy?.name,
+        date: todayString(env.TIMEZONE, item.updatedAt),
+      })),
       upcoming,
       past,
       restrictedHolidayTypeId: rhBalance?.leaveType.id ?? null,
@@ -159,5 +172,10 @@ router.get(
     res.send(`﻿${csv}`);
   },
 );
+
+router.patch('/adjustments/:id/dismiss', validate({ params: idParams }), async (req, res) => {
+  await BalanceAdjustment.updateOne({ _id: req.valid.params.id, user: req.user.id }, { dismissedAt: new Date() });
+  res.status(204).end();
+});
 
 export default router;

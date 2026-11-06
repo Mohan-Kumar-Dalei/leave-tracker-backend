@@ -12,6 +12,7 @@ const { default: mongoose } = await import('mongoose');
 const { default: request } = await import('supertest');
 const { createApp } = await import('../src/app.js');
 const { connectDb } = await import('../src/config/db.js');
+const { default: BalanceAdjustment } = await import('../src/models/BalanceAdjustment.js');
 const { default: Holiday } = await import('../src/models/Holiday.js');
 const { default: ImportedUsage } = await import('../src/models/ImportedUsage.js');
 const { default: Leave } = await import('../src/models/Leave.js');
@@ -184,6 +185,22 @@ describe('access control', () => {
       .set('Origin', 'https://evil.example')
       .send({ email: user.email, password: PASSWORD })
       .expect(403);
+  });
+
+  it('never serves env or source files', async () => {
+    const paths = ['/.env', '/.env.passwords', '/api/.env', '/api/env', '/package.json', '/src/config/env.js', '/data/roster.local.json'];
+    const agent = await signIn(await makeUser());
+
+    for (const path of paths) {
+      assert.ok([401, 404].includes((await request(app).get(path)).status), path);
+      const signedIn = await agent.get(path);
+      assert.equal(signedIn.status, 404, path);
+      assert.equal(signedIn.text.includes(process.env.JWT_ACCESS_SECRET), false, path);
+    }
+
+    const health = await request(app).get('/api/health');
+    assert.equal(JSON.stringify(health.body).includes(process.env.JWT_ACCESS_SECRET), false);
+    assert.deepEqual(Object.keys(health.body).sort(), ['database', 'status']);
   });
 
   it('sends security headers', async () => {
@@ -374,6 +391,110 @@ describe('review flow', () => {
     const onlyAdmin = await makeUser({ role: 'admin' });
     const agent = await signIn(onlyAdmin);
     await agent.patch(`/api/admin/employees/${onlyAdmin.id}`).send({ isActive: false }).expect(409);
+  });
+});
+
+describe('balance changes', () => {
+  async function setup() {
+    const person = await makeUser();
+    const employee = await signIn(person);
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const base = `/api/admin/employees/${person.id}/adjustments`;
+    await BalanceAdjustment.deleteMany({});
+    const { body } = await admin
+      .post(base)
+      .send({ leaveTypeId: casual.id, year: YEAR, days: 2, reason: 'Worked on Sunday' })
+      .expect(201);
+    return { employee, admin, url: `${base}/${body.adjustment.id}` };
+  }
+
+  const casualRow = (summary) => summary.balances.find((balance) => balance.leaveType.code === 'CL');
+  const getSummary = async (agent) => (await agent.get(`/api/me/summary?year=${YEAR}`).expect(200)).body;
+
+  it('shows a banner until the employee closes it, and again after an edit', async () => {
+    const { employee, admin, url } = await setup();
+
+    let summary = await getSummary(employee);
+    assert.equal(summary.adjustments.length, 1);
+    assert.equal(summary.adjustments[0].reason, 'Worked on Sunday');
+    assert.equal(casualRow(summary).available, 5);
+
+    await employee.patch(`/api/me/adjustments/${summary.adjustments[0].id}/dismiss`).expect(204);
+    summary = await getSummary(employee);
+    assert.equal(summary.adjustments.length, 0);
+    assert.equal(casualRow(summary).available, 5);
+
+    await admin.patch(url).send({ days: 1, reason: 'Half of that was a mistake' }).expect(200);
+    summary = await getSummary(employee);
+    assert.equal(summary.adjustments.length, 1);
+    assert.equal(summary.adjustments[0].days, 1);
+    assert.equal(casualRow(summary).available, 4);
+  });
+
+  it('lets an admin remove a change', async () => {
+    const { employee, admin, url } = await setup();
+    await admin.delete(url).expect(204);
+
+    const summary = await getSummary(employee);
+    assert.equal(summary.adjustments.length, 0);
+    assert.equal(casualRow(summary).available, 3);
+    await admin.delete(url).expect(404);
+  });
+
+  it('will not remove days the employee has already booked', async () => {
+    const { employee, admin, url } = await setup();
+    await apply(employee, { from: '2031-03-03', to: '2031-03-07' }).expect(201);
+
+    const blocked = await admin.delete(url);
+    assert.equal(blocked.status, 409);
+    assert.match(blocked.body.message, /already booked/);
+    await admin.patch(url).send({ days: 1, reason: 'Trying to reduce' }).expect(409);
+  });
+
+  it('stays closed to employees, and an employee cannot close someone else\'s banner', async () => {
+    const { employee, admin, url } = await setup();
+    await employee.patch(url).send({ days: 9, reason: 'Giving myself days' }).expect(403);
+    await employee.delete(url).expect(403);
+
+    const other = await signIn(await makeUser());
+    const { adjustments } = await getSummary(employee);
+    await other.patch(`/api/me/adjustments/${adjustments[0].id}/dismiss`).expect(204);
+    assert.equal((await getSummary(employee)).adjustments.length, 1);
+    await admin.delete(url).expect(204);
+  });
+});
+
+describe('notifications', () => {
+  it('is empty after mark all read', async () => {
+    const employee = await signIn(await makeUser());
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    await apply(employee, { from: '2031-03-03', to: '2031-03-03' }).expect(201);
+
+    let body = {};
+    for (let i = 0; i < 20 && !body.unread; i += 1) {
+      ({ body } = await admin.get('/api/notifications'));
+      await new Promise((resolve) => { setTimeout(resolve, 25); });
+    }
+    assert.equal(body.items.length, 1);
+
+    await admin.patch('/api/notifications/read-all').expect(204);
+    ({ body } = await admin.get('/api/notifications').expect(200));
+    assert.equal(body.items.length, 0);
+    assert.equal(body.unread, 0);
+  });
+});
+
+describe('admin schedule', () => {
+  it('lists the team and holidays, for admins only', async () => {
+    await Holiday.create({ name: 'Spring Day', date: parseDay('2031-03-20') });
+    const employee = await signIn(await makeUser({ name: 'Asha Rao' }));
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    await apply(employee, { from: '2031-03-03', to: '2031-03-03' }).expect(201);
+
+    await employee.get('/api/admin/schedule').expect(403);
+    const { body } = await admin.get(`/api/admin/schedule?year=${YEAR}`).expect(200);
+    assert.deepEqual(body.upcoming.map((entry) => entry.title), ['Asha Rao', 'Spring Day']);
+    assert.match(body.upcoming[0].detail, /Casual, 1 day\. Family function/);
   });
 });
 

@@ -10,7 +10,8 @@ router.get('/stream', openStream);
 
 router.get('/', async (req, res) => {
   const [items, unread] = await Promise.all([
-    Notification.find({ recipient: req.user.id }).sort({ createdAt: -1 }).limit(30),
+    // Read notifications leave the list, so marking all read leaves it empty.
+    Notification.find({ recipient: req.user.id, readAt: null }).sort({ createdAt: -1 }).limit(30),
     Notification.countDocuments({ recipient: req.user.id, readAt: null }),
   ]);
   res.json({ items, unread });

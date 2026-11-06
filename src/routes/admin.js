@@ -14,7 +14,7 @@ import { sendMail } from '../services/mail.js';
 import { decisionMail, inviteMail, range } from '../services/mailTemplates.js';
 import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
 import { randomToken, revokeAllSessions, sha256 } from '../services/tokens.js';
-import { addDays, monthRange, parseDay, toDayString, todayString } from '../utils/dates.js';
+import { addDays, monthRange, parseDay, toDayString, todayString, yearRange } from '../utils/dates.js';
 import {
   ApiError,
   conflict,
@@ -109,6 +109,50 @@ router.get('/overview', async (_req, res) => {
     holidays,
   });
 });
+
+/* Upcoming and past, for the whole team */
+
+router.get(
+  '/schedule',
+  validate({ query: z.object({ year: year.optional() }) }),
+  async (req, res) => {
+    const today = todayString(env.TIMEZONE);
+    const selectedYear = req.valid.query.year ?? Number(today.slice(0, 4));
+    const { start, end } = yearRange(selectedYear);
+
+    const [leaves, holidays] = await Promise.all([
+      Leave.find({ year: selectedYear, status: { $in: ['pending', 'approved'] } })
+        .populate('user', 'name')
+        .populate('leaveType', 'name'),
+      Holiday.find({ date: { $gte: start, $lte: end } }),
+    ]);
+
+    const entries = [
+      ...leaves.map((leave) => {
+        const { id, from, to, days, status, reason } = leave.toJSON();
+        return {
+          kind: 'leave',
+          id,
+          from,
+          to,
+          status,
+          title: leave.user?.name,
+          detail: `${leave.leaveType?.name}, ${days} ${days === 1 ? 'day' : 'days'}. ${reason}`,
+        };
+      }),
+      ...holidays.map((holiday) => {
+        const { id, date, name, note, restricted } = holiday.toJSON();
+        return { kind: 'holiday', id, from: date, to: date, title: name, note, restricted };
+      }),
+    ];
+
+    res.json({
+      year: selectedYear,
+      upcoming: entries.filter((entry) => entry.to >= today).sort((a, b) => a.from.localeCompare(b.from)),
+      past: entries.filter((entry) => entry.to < today).sort((a, b) => b.from.localeCompare(a.from)),
+    });
+  },
+);
 
 /* Leave requests */
 
@@ -390,20 +434,88 @@ router.post('/employees/:id/invite', validate({ params: idParams }), async (req,
   res.json({ message: `A set password link was sent to ${user.email}.` });
 });
 
+const adjustmentDays = z.coerce
+  .number()
+  .min(-365)
+  .max(365)
+  .refine((value) => value !== 0 && Number.isInteger(value * 2), 'Use whole or half days');
+
+const adjustmentReason = z.string().trim().min(3, 'Add a short reason').max(240);
+
+const adjustmentParams = z.strictObject({ id: objectId, adjustmentId: objectId });
+
+const signedDays = (days) => `${days > 0 ? '+' : ''}${days} ${Math.abs(days) === 1 ? 'day' : 'days'}`;
+
+// A change must not take away days the employee has already booked.
+async function assertDaysAreFree(userId, leaveType, selectedYear, change) {
+  if (change >= 0) return;
+  const { available } = await getBalance(userId, leaveType._id, selectedYear);
+  if (available + change < 0) {
+    throw conflict(`Only ${available} of ${leaveType.name} is free. The rest is already booked, so cancel that leave first.`);
+  }
+}
+
+async function findAdjustment({ id, adjustmentId }) {
+  const adjustment = await BalanceAdjustment.findOne({ _id: adjustmentId, user: id }).populate('leaveType');
+  if (!adjustment) throw notFound('That balance change was not found.');
+  return adjustment;
+}
+
+router.patch(
+  '/employees/:id/adjustments/:adjustmentId',
+  validate({ params: adjustmentParams, body: z.strictObject({ days: adjustmentDays, reason: adjustmentReason }) }),
+  async (req, res) => {
+    const { days, reason } = req.valid.body;
+    const adjustment = await findAdjustment(req.valid.params);
+    const { leaveType, year: adjustmentYear } = adjustment;
+
+    await assertDaysAreFree(adjustment.user, leaveType, adjustmentYear, days - adjustment.days);
+
+    adjustment.days = days;
+    adjustment.reason = reason;
+    // The employee should see the new version, even if they closed the old one.
+    adjustment.dismissedAt = undefined;
+    await adjustment.save();
+
+    res.json({ adjustment });
+
+    await notifyUsers([adjustment.user], {
+      kind: 'balance',
+      title: `${leaveType.name} change updated to ${signedDays(days)}`,
+      body: reason,
+      link: '/',
+    });
+    broadcastChange();
+  },
+);
+
+router.delete(
+  '/employees/:id/adjustments/:adjustmentId',
+  validate({ params: adjustmentParams }),
+  async (req, res) => {
+    const adjustment = await findAdjustment(req.valid.params);
+    const { leaveType, year: adjustmentYear, days, user } = adjustment;
+
+    await assertDaysAreFree(user, leaveType, adjustmentYear, -days);
+    await adjustment.deleteOne();
+
+    res.status(204).end();
+
+    await notifyUsers([user], {
+      kind: 'balance',
+      title: `${leaveType.name} change of ${signedDays(days)} removed`,
+      body: 'Your balance is back to what it was before this change.',
+      link: '/',
+    });
+    broadcastChange();
+  },
+);
+
 router.post(
   '/employees/:id/adjustments',
   validate({
     params: idParams,
-    body: z.strictObject({
-      leaveTypeId: objectId,
-      year,
-      days: z.coerce
-        .number()
-        .min(-365)
-        .max(365)
-        .refine((value) => value !== 0 && Number.isInteger(value * 2), 'Use whole or half days'),
-      reason: z.string().trim().min(3, 'Add a short reason').max(240),
-    }),
+    body: z.strictObject({ leaveTypeId: objectId, year, days: adjustmentDays, reason: adjustmentReason }),
   }),
   async (req, res) => {
     const { leaveTypeId, year: selectedYear, days, reason } = req.valid.body;
@@ -417,6 +529,8 @@ router.post(
     if (!leaveType.tracksBalance) {
       throw new ApiError(400, `${leaveType.name} has no balance to adjust.`);
     }
+
+    await assertDaysAreFree(user.id, leaveType, selectedYear, days);
 
     const adjustment = await BalanceAdjustment.create({
       user: user.id,
