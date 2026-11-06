@@ -20,12 +20,17 @@ const LEAVE_TYPES = [
 ];
 
 const HOLIDAYS_2026 = [
+  ['2026-01-01', 'Happy New Year'],
   ['2026-01-26', 'Republic Day'],
+  ['2026-02-15', 'Maha Shivratri', true],
   ['2026-03-04', 'Holi'],
+  ['2026-04-01', 'Utkal Divas', true],
+  ['2026-04-03', 'Good Friday', true],
+  ['2026-07-16', 'Rath Yatra'],
   ['2026-08-15', 'Independence Day'],
   ['2026-08-28', 'Raksha Bandhan'],
   ['2026-09-14', 'Ganesh Chaturthi', true],
-  ['2026-10-02', 'Mahatma Gandhi Jayanti'],
+  ['2026-10-02', 'Mahatma Gandhi Jayanthi'],
   ['2026-10-20', 'Dusshera'],
   ['2026-11-08', 'Diwali'],
   ['2026-12-25', 'Christmas'],

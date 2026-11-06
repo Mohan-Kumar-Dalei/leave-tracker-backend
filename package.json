@@ -13,7 +13,8 @@
     "start": "node src/server.js",
     "seed": "node src/seed.js",
     "seed:demo": "node src/seed.js --demo",
-    "test": "node --test test/api.test.js"
+    "test": "node --test test/api.test.js",
+    "import:roster": "node src/importRoster.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

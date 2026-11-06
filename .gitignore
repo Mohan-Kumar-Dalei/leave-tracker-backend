@@ -7,3 +7,6 @@ logs/
 *.log
 coverage/
 .DS_Store
+
+# Real employee data, never commit
+data/

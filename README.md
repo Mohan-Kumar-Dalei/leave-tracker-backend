@@ -28,15 +28,28 @@ npm test
 
 The tests use a separate `leave_tracker_test` database on the same MongoDB.
 
+## Importing the real team
+
+Real names, emails and leave numbers stay out of Git. They live in `data/roster.local.json`, and the `data/` folder is ignored. The file format is described at the top of `src/importRoster.js`.
+
+```bash
+npm run seed
+npm run import:roster -- data/roster.local.json
+```
+
+Add `--remove-demo` to also delete the sample accounts. It can be run again: existing people keep their password and their monthly usage is replaced. No mail is sent.
+
+Monthly usage from the old sheet has no dates, so it is stored as monthly totals in `ImportedUsage`. It counts against the balance and shows in the month by month chart, but not in the leave lists or the calendar.
+
 ## Leave rules
 
 - Weekends (`WEEKEND_DAYS`) and public holidays inside a leave are not counted. Restricted holidays are.
 - Half days work for a single date only.
-- Available is entitled minus approved minus waiting, so waiting requests hold their days.
+- Available is entitled minus earlier usage, approved and pending days, so pending requests hold their days.
 - Balances are calculated from leave records, never stored as a counter.
 - Requests cannot overlap, cross a year end, or exceed the balance. Leave Without Pay has no limit.
 - Restricted holiday leave must be on a restricted holiday, once per holiday.
-- Absent on the dashboard is the number of approved Leave Without Pay days.
+- Absent on the dashboard is the number of Leave Without Pay days taken.
 - Employees can cancel a waiting request, or an approved one that has not started. Admins can cancel any approved leave.
 - An admin cannot decide their own request while another active admin exists, and the last active admin cannot be removed.
 

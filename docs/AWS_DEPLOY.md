@@ -146,6 +146,19 @@ pm2 startup
 
 `pm2 startup` ek `sudo env PATH=...` command print karega. Use copy karke chalao, taaki reboot par app apne aap start ho.
 
+Real employees bhi import karo. Yeh file Git me nahi hai, isliye apne Windows PC se server par copy karni hogi. PowerShell me, backend folder ke andar se:
+
+```powershell
+scp -i leave-tracker-key.pem data/roster.local.json ubuntu@YOUR_IP:/var/www/leave-tracker/api/data/
+```
+
+Pehle server par `mkdir -p /var/www/leave-tracker/api/data` chala lena. Phir server par:
+
+```bash
+npm run import:roster -- data/roster.local.json
+rm data/roster.local.json
+```
+
 Seed ke baad `.env` se `SEED_ADMIN_PASSWORD` hata do. Phir check karo:
 
 ```bash

@@ -4,10 +4,11 @@ import env from '../config/env.js';
 import { validate } from '../middleware/validate.js';
 import BalanceAdjustment from '../models/BalanceAdjustment.js';
 import Holiday from '../models/Holiday.js';
+import ImportedUsage from '../models/ImportedUsage.js';
 import Leave, { LEAVE_STATUSES } from '../models/Leave.js';
 import LeaveType from '../models/LeaveType.js';
 import User from '../models/User.js';
-import { getBalance, getBalances } from '../services/balances.js';
+import { getBalance, getBalances, getMonthlyUsage } from '../services/balances.js';
 import { sendMail } from '../services/mail.js';
 import { decisionMail, inviteMail, range } from '../services/mailTemplates.js';
 import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
@@ -39,7 +40,7 @@ router.get('/overview', async (_req, res) => {
   const year_ = today.getUTCFullYear();
   const month = monthRange(year_, today.getUTCMonth());
 
-  const [pendingItems, pendingCount, awayToday, nextUp, employees, approvedThisMonth, byType, holidays] =
+  const [pendingItems, pendingCount, awayToday, nextUp, employees, approvedThisMonth, byType, holidays, earlierYear] =
     await Promise.all([
       Leave.find({ status: 'pending' })
         .populate('user', employeeFields)
@@ -70,7 +71,29 @@ router.get('/overview', async (_req, res) => {
         { $sort: { order: 1 } },
       ]),
       Holiday.find({ date: { $gte: today } }).sort({ date: 1 }).limit(3),
+      ImportedUsage.aggregate([
+        { $match: { year: year_ } },
+        { $lookup: { from: 'leavetypes', localField: 'leaveType', foreignField: '_id', as: 'type' } },
+        { $unwind: '$type' },
+        {
+          $group: {
+            _id: { code: '$type.code', name: '$type.name', order: '$type.order' },
+            days: { $sum: '$days' },
+            thisMonth: { $sum: { $cond: [{ $eq: ['$month', today.getUTCMonth() + 1] }, '$days', 0] } },
+          },
+        },
+      ]),
     ]);
+
+  // Days from the old sheet count alongside days approved here.
+  const usage = new Map(byType.map((row) => [row.code, { ...row }]));
+  for (const { _id, days } of earlierYear) {
+    const row = usage.get(_id.code) ?? { ..._id, days: 0, requests: 0 };
+    row.days += days;
+    usage.set(_id.code, row);
+  }
+  const earlierThisMonth = earlierYear.reduce((sum, row) => sum + row.thisMonth, 0);
+
 
   res.json({
     today: todayValue,
@@ -79,8 +102,8 @@ router.get('/overview', async (_req, res) => {
     awayToday,
     nextUp,
     employees,
-    approvedDaysThisMonth: approvedThisMonth[0]?.days ?? 0,
-    byType,
+    approvedDaysThisMonth: (approvedThisMonth[0]?.days ?? 0) + earlierThisMonth,
+    byType: [...usage.values()].sort((a, b) => a.order - b.order),
     holidays,
   });
 });
@@ -322,8 +345,9 @@ router.get(
     const user = await User.findById(req.valid.params.id);
     if (!user) throw notFound('That employee was not found.');
 
-    const [balances, adjustments, recent] = await Promise.all([
+    const [balances, monthly, adjustments, recent] = await Promise.all([
       getBalances(user.id, selectedYear),
+      getMonthlyUsage(user.id, selectedYear),
       BalanceAdjustment.find({ user: user.id, year: selectedYear })
         .populate('leaveType', 'name')
         .populate('createdBy', 'name')
@@ -334,7 +358,7 @@ router.get(
         .limit(20),
     ]);
 
-    res.json({ user, year: selectedYear, balances, adjustments, recent });
+    res.json({ user, year: selectedYear, balances, monthly, adjustments, recent });
   },
 );
 

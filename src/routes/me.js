@@ -4,7 +4,8 @@ import env from '../config/env.js';
 import { validate } from '../middleware/validate.js';
 import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
-import { getBalances } from '../services/balances.js';
+import { getBalances, getMonthlyUsage } from '../services/balances.js';
+import { isWeekend } from '../services/leaveDays.js';
 import { toDayString, todayString, yearRange } from '../utils/dates.js';
 import { pageMeta, paginate, toCsv } from '../utils/http.js';
 import { limit, page, year } from '../utils/schemas.js';
@@ -44,7 +45,8 @@ function holidayEntry(holiday, availedIds, rhAvailable) {
     note: json.note,
     restricted: json.restricted,
     availed,
-    canAvail: json.restricted && !availed && rhAvailable > 0,
+    // A restricted holiday on a weekend is already a day off.
+    canAvail: json.restricted && !availed && rhAvailable > 0 && !isWeekend(holiday.date),
   };
 }
 
@@ -56,12 +58,13 @@ router.get(
     const { start, end } = yearRange(selectedYear);
     const today = todayString(env.TIMEZONE);
 
-    const [balances, leaves, holidays] = await Promise.all([
+    const [balances, leaves, holidays, monthly] = await Promise.all([
       getBalances(req.user.id, selectedYear),
       Leave.find({ user: req.user.id, year: selectedYear, status: { $in: ACTIVE_STATUSES } })
         .populate('leaveType', typeFields)
         .sort({ from: 1 }),
       Holiday.find({ date: { $gte: start, $lte: end } }).sort({ date: 1 }),
+      getMonthlyUsage(req.user.id, selectedYear),
     ]);
 
     const rhBalance = balances.find((balance) => balance.leaveType.restrictedHolidayOnly);
@@ -82,7 +85,7 @@ router.get(
     const bookedThisYear = balances.reduce((sum, balance) => sum + balance.booked, 0);
     const absent = balances
       .filter((balance) => !balance.leaveType.tracksBalance)
-      .reduce((sum, balance) => sum + balance.approved, 0);
+      .reduce((sum, balance) => sum + balance.earlier + balance.approved, 0);
 
     res.json({
       year: selectedYear,
@@ -90,6 +93,7 @@ router.get(
       bookedThisYear,
       absent,
       balances,
+      monthly,
       upcoming,
       past,
       restrictedHolidayTypeId: rhBalance?.leaveType.id ?? null,

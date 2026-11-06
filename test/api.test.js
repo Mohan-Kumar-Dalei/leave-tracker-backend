@@ -13,6 +13,7 @@ const { default: request } = await import('supertest');
 const { createApp } = await import('../src/app.js');
 const { connectDb } = await import('../src/config/db.js');
 const { default: Holiday } = await import('../src/models/Holiday.js');
+const { default: ImportedUsage } = await import('../src/models/ImportedUsage.js');
 const { default: Leave } = await import('../src/models/Leave.js');
 const { default: LeaveType } = await import('../src/models/LeaveType.js');
 const { default: User } = await import('../src/models/User.js');
@@ -237,6 +238,25 @@ describe('applying for leave', () => {
     await apply(agent, { leaveTypeId: rh.id, from: '2031-03-05', to: '2031-03-05' }).expect(400);
     await apply(agent, { leaveTypeId: rh.id, from: '2031-03-06', to: '2031-03-06' }).expect(201);
     await apply(agent, { leaveTypeId: rh.id, from: '2031-03-06', to: '2031-03-06' }).expect(409);
+  });
+});
+
+describe('leave from the old sheet', () => {
+  it('counts against the balance and shows by month', async () => {
+    const user = await makeUser();
+    await ImportedUsage.deleteMany({});
+    await ImportedUsage.create({ user: user._id, leaveType: casual._id, year: YEAR, month: 2, days: 2.5 });
+    const agent = await signIn(user);
+
+    const { body } = await agent.get(`/api/me/summary?year=${YEAR}`).expect(200);
+    const row = body.balances.find((balance) => balance.leaveType.code === 'CL');
+    assert.equal(row.booked, 2.5);
+    assert.equal(row.available, 0.5);
+    assert.equal(body.bookedThisYear, 2.5);
+    assert.equal(body.monthly[1], 2.5);
+
+    await apply(agent, { from: '2031-03-03', to: '2031-03-03' }).expect(409);
+    await apply(agent, { from: '2031-03-03', to: '2031-03-03', session: 'first' }).expect(201);
   });
 });
 
