@@ -25,7 +25,7 @@ const schema = z.object({
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),
 
   TIMEZONE: z.string().default('Asia/Kolkata'),
-  WEEKEND_DAYS: z.string().default('0,6'),
+  WEEKEND_DAYS: z.string().default('0'),
 
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().positive().default(587),

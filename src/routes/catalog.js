@@ -128,6 +128,7 @@ router.get(
 
     res.json({
       today: todayString(env.TIMEZONE),
+      weekendDays: env.weekendDays,
       holidays,
       leaves: leaves.map((leave) => {
         const { id, from, to, session, days, status } = leave.toJSON();

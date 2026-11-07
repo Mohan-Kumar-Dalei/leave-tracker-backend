@@ -37,7 +37,7 @@ export async function assessLeave(user, input) {
 
   const days = await countLeaveDays({ from, to, session });
   if (days === 0) {
-    throw badRequest('Those dates are weekends or holidays, so no leave is needed.');
+    throw badRequest('Those dates are a Sunday or a holiday, so no leave is needed.');
   }
 
   const overlap = await Leave.findOne({

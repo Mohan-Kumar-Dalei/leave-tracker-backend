@@ -43,7 +43,7 @@ Monthly usage from the old sheet has no dates, so it is stored as monthly totals
 
 ## Leave rules
 
-- Weekends (`WEEKEND_DAYS`) and public holidays inside a leave are not counted. Restricted holidays are.
+- The working week is Monday to Saturday. Sundays (`WEEKEND_DAYS`) and public holidays inside a leave are not counted. Restricted holidays are.
 - Half days work for a single date only.
 - Available is entitled minus earlier usage, approved and pending days, so pending requests hold their days.
 - Balances are calculated from leave records, never stored as a counter.

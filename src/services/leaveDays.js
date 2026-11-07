@@ -6,7 +6,7 @@ export function isWeekend(date) {
   return env.weekendDays.includes(date.getUTCDay());
 }
 
-// Counts the working days a leave uses. Weekends and public holidays inside the
+// Counts the working days a leave uses. Weekly offs and public holidays inside the
 // range are free. Restricted holidays count, since they are normal working days
 // for anyone who does not avail them.
 export async function countLeaveDays({ from, to, session = 'full' }) {

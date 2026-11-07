@@ -6,6 +6,7 @@ process.env.MONGO_DB_NAME = 'leave_tracker_test';
 process.env.JWT_ACCESS_SECRET ??= 'test-secret-test-secret-test-secret-1234';
 process.env.MONGO_URI ??= 'mongodb://localhost:27017/';
 process.env.CLIENT_ORIGINS = 'http://localhost:5173';
+process.env.WEEKEND_DAYS = '0';
 
 const { default: bcrypt } = await import('bcryptjs');
 const { default: mongoose } = await import('mongoose');
@@ -85,14 +86,14 @@ beforeEach(async () => {
 });
 
 describe('day counting', () => {
-  it('skips weekends and public holidays but not restricted holidays', async () => {
+  it('skips Sundays and public holidays but not restricted holidays', async () => {
     await Holiday.create([
       { name: 'Public', date: parseDay('2031-03-05') },
       { name: 'Optional', date: parseDay('2031-03-06'), restricted: true },
     ]);
-    // Mon 3 Mar to Sun 9 Mar 2031: 5 weekdays, minus 1 public holiday.
+    // Mon 3 Mar to Sun 9 Mar 2031: 6 working days, minus 1 public holiday.
     const days = await countLeaveDays({ from: parseDay('2031-03-03'), to: parseDay('2031-03-09') });
-    assert.equal(days, 4);
+    assert.equal(days, 5);
   });
 
   it('counts half a day for a half day session', async () => {
@@ -243,9 +244,31 @@ describe('applying for leave', () => {
     await apply(agent, { from: '2031-03-04', to: '2031-03-04' }).expect(409);
   });
 
-  it('rejects leave on a weekend only', async () => {
+  it('rejects leave on a Sunday or a public holiday only', async () => {
+    await Holiday.create({ name: 'Public', date: parseDay('2031-03-05') });
     const agent = await signIn(await makeUser());
-    await apply(agent, { from: '2031-03-08', to: '2031-03-09' }).expect(400);
+
+    const sunday = await apply(agent, { from: '2031-03-09', to: '2031-03-09' });
+    assert.equal(sunday.status, 400);
+    assert.match(sunday.body.message, /Sunday or a holiday/);
+
+    await apply(agent, { from: '2031-03-05', to: '2031-03-05' }).expect(400);
+    const preview = await agent
+      .post('/api/leaves/preview')
+      .send({ leaveTypeId: casual.id, from: '2031-03-09', to: '2031-03-09' });
+    assert.equal(preview.status, 400);
+  });
+
+  it('counts Saturday as a working day', async () => {
+    const agent = await signIn(await makeUser());
+    const saturday = await apply(agent, { from: '2031-03-08', to: '2031-03-08' }).expect(201);
+    assert.equal(saturday.body.leave.days, 1);
+
+    const preview = await agent
+      .post('/api/leaves/preview')
+      .send({ leaveTypeId: lwp.id, from: '2031-03-14', to: '2031-03-17' })
+      .expect(200);
+    assert.equal(preview.body.days, 3);
   });
 
   it('rejects reversed dates, fake dates and year crossing', async () => {

@@ -46,7 +46,7 @@ function holidayEntry(holiday, availedIds, rhAvailable) {
     note: json.note,
     restricted: json.restricted,
     availed,
-    // A restricted holiday on a weekend is already a day off.
+    // A restricted holiday on a weekly off is already a day off.
     canAvail: json.restricted && !availed && rhAvailable > 0 && !isWeekend(holiday.date),
   };
 }
