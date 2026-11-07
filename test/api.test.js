@@ -154,6 +154,22 @@ describe('auth', () => {
     await request(app).post('/api/auth/refresh').set('Cookie', oldCookie).expect(401);
   });
 
+  it('lets an employee change their own password', async () => {
+    const user = await makeUser();
+    const agent = await signIn(user);
+    const other = await signIn(user);
+    const url = '/api/auth/change-password';
+
+    await agent.post(url).send({ currentPassword: 'wrong-one-123', newPassword: 'brand-new-pass-1' }).expect(400);
+    await agent.post(url).send({ currentPassword: PASSWORD, newPassword: 'short1' }).expect(400);
+    await agent.post(url).send({ currentPassword: PASSWORD, newPassword: 'brand-new-pass-1' }).expect(200);
+
+    await agent.get('/api/auth/me').expect(200);
+    await other.get('/api/auth/me').expect(401);
+    await request(app).post('/api/auth/login').send({ email: user.email, password: PASSWORD }).expect(401);
+    await request(app).post('/api/auth/login').send({ email: user.email, password: 'brand-new-pass-1' }).expect(200);
+  });
+
   it('ends access at once when a user is deactivated', async () => {
     const user = await makeUser();
     const agent = await signIn(user);
@@ -366,15 +382,18 @@ describe('review flow', () => {
       .expect(200);
   });
 
-  it('still adds an employee with no password, who cannot sign in yet', async () => {
+  it('needs a password to add an employee', async () => {
     const agent = await signIn(await makeUser({ role: 'admin' }));
-    const person = { name: 'Invited Person', email: 'invited@example.com', employeeId: 'NEW-2' };
+    const person = { name: 'No Password', email: 'nopass@example.com', employeeId: 'NEW-2' };
 
-    await agent.post('/api/admin/employees').send(person).expect(201);
-    await request(app)
-      .post('/api/auth/login')
-      .send({ email: person.email, password: 'Anything@2026' })
-      .expect(401);
+    await agent.post('/api/admin/employees').send(person).expect(400);
+    assert.equal(await User.countDocuments({ email: person.email }), 0);
+  });
+
+  it('has no password link route any more', async () => {
+    const agent = await signIn(await makeUser({ role: 'admin' }));
+    const person = await makeUser();
+    await agent.post(`/api/admin/employees/${person.id}/invite`).expect(404);
   });
 
   it('leaves admins out of the employee list', async () => {

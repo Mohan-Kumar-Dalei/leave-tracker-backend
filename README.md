@@ -86,8 +86,7 @@ All routes are under `/api`. Everything except sign in and password reset needs 
 | GET | `/team-calendar` | Who is away in a month, shown to admins as a page and to employees in the calendar view of My leave. Names, dates and status only; admins also get the leave type |
 | GET | `/admin/overview`, `/admin/schedule`, `/admin/leaves`, `/admin/leaves.csv` | Admin views |
 | PATCH | `/admin/leaves/:id/review` | Approve or reject |
-| GET, POST, PATCH | `/admin/employees` | Employees. The list leaves out admins. A new employee can be given a password, otherwise they get a set password link by mail |
-| POST | `/admin/employees/:id/invite` | Invite link |
+| GET, POST, PATCH | `/admin/employees` | Employees. The list leaves out admins. The admin sets the first password, and the employee can change it from Change password |
 | POST, PATCH, DELETE | `/admin/employees/:id/adjustments` | Add, edit or remove a balance change. Days already booked cannot be taken away |
 | PATCH | `/me/adjustments/:id/dismiss` | Close the balance change banner |
 

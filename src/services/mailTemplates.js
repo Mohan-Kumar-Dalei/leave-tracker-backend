@@ -113,15 +113,6 @@ export function cancelledMail({ employee, leave, typeName, cancelledByAdmin }) {
   });
 }
 
-export function inviteMail({ user, token }) {
-  return build(`Your ${env.APP_NAME} account is ready`, {
-    heading: `Welcome, ${user.name}`,
-    intro: 'Your leave account has been created. Set a password to sign in. This link works for 48 hours.',
-    action: { label: 'Set my password', url: `${env.APP_URL}/reset-password?token=${encodeURIComponent(token)}` },
-    footer: 'If you were not expecting this, you can ignore this email.',
-  });
-}
-
 export function resetMail({ user, token }) {
   return build(`Reset your ${env.APP_NAME} password`, {
     heading: 'Reset your password',

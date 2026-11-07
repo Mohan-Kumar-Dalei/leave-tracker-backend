@@ -11,9 +11,9 @@ import LeaveType from '../models/LeaveType.js';
 import User from '../models/User.js';
 import { getBalance, getBalances, getMonthlyUsage } from '../services/balances.js';
 import { sendMail } from '../services/mail.js';
-import { decisionMail, inviteMail, range } from '../services/mailTemplates.js';
+import { decisionMail, range } from '../services/mailTemplates.js';
 import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
-import { randomToken, revokeAllSessions, sha256 } from '../services/tokens.js';
+import { revokeAllSessions } from '../services/tokens.js';
 import { addDays, monthRange, parseDay, toDayString, todayString, yearRange } from '../utils/dates.js';
 import {
   ApiError,
@@ -30,7 +30,6 @@ import { day, email, idParams, limit, objectId, page, password, year } from '../
 const router = Router();
 
 const BCRYPT_COST = 12;
-const INVITE_TTL_MS = 48 * 60 * 60 * 1000;
 const employeeFields = 'name email employeeId department designation';
 const typeFields = 'name code tracksBalance restrictedHolidayOnly';
 
@@ -316,15 +315,6 @@ const employeeBody = {
   isActive: z.boolean().optional(),
 };
 
-async function issueInvite(user) {
-  const token = randomToken();
-  await User.updateOne(
-    { _id: user._id },
-    { resetTokenHash: sha256(token), resetTokenExpires: new Date(Date.now() + INVITE_TTL_MS) },
-  );
-  sendMail({ to: user.email, ...inviteMail({ user, token }) });
-}
-
 router.get(
   '/employees',
   validate({
@@ -356,21 +346,19 @@ router.get(
   },
 );
 
-// With a password the employee can sign in straight away. Without one they get
-// a link by mail to choose their own. A password is never sent by mail.
+// The admin sets the first password and the employee can change it after signing in.
 router.post(
   '/employees',
-  validate({ body: z.strictObject({ ...employeeBody, password: password.optional() }) }),
+  validate({ body: z.strictObject({ ...employeeBody, password }) }),
   async (req, res) => {
     const { joinedOn, password: chosenPassword, ...rest } = req.valid.body;
 
     const user = await User.create({
       ...rest,
       joinedOn: joinedOn ? parseDay(joinedOn) : undefined,
-      ...(chosenPassword ? { passwordHash: await bcrypt.hash(chosenPassword, BCRYPT_COST) } : {}),
+      passwordHash: await bcrypt.hash(chosenPassword, BCRYPT_COST),
     });
 
-    if (!chosenPassword) await issueInvite(user);
     res.status(201).json({ user });
   },
 );
@@ -426,13 +414,6 @@ router.patch(
     res.json({ user: target });
   },
 );
-
-router.post('/employees/:id/invite', validate({ params: idParams }), async (req, res) => {
-  const user = await User.findOne({ _id: req.valid.params.id, isActive: true });
-  if (!user) throw notFound('That employee was not found.');
-  await issueInvite(user);
-  res.json({ message: `A set password link was sent to ${user.email}.` });
-});
 
 const adjustmentDays = z.coerce
   .number()
