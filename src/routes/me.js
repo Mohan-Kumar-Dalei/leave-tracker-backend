@@ -12,6 +12,8 @@ import GmailLink from '../models/GmailLink.js';
 import OAuthState from '../models/OAuthState.js';
 import { STATE_COOKIE, STATE_COOKIE_PATH } from './google.js';
 import { authUrl, disconnect } from '../services/gmail.js';
+import { deleteFile, fileDetails, isUsableAvatar, uploadAuth } from '../services/imagekit.js';
+import User from '../models/User.js';
 import { randomToken, sha256 } from '../services/tokens.js';
 import { cleanSignature, MAX_SIGNATURE_LENGTH } from '../services/signature.js';
 import { APPLICATION_SUBJECT, designationOf, signatureData } from '../services/leaveMail.js';
@@ -225,6 +227,46 @@ function unpackSignature(packed) {
     throw badRequest('That signature could not be read. Paste it again.');
   }
 }
+
+/* Profile photo */
+
+// A single use signature for one upload straight to ImageKit.
+router.get('/photo/upload-auth', (req, res) => {
+  if (!env.imagekitEnabled) throw badRequest('Profile photos are not set up on this server yet.');
+  res.json({ ...uploadAuth(req.user.id), urlEndpoint: env.IMAGEKIT_URL_ENDPOINT });
+});
+
+// Saves the uploaded file as the photo once ImageKit confirms it is ours.
+router.post(
+  '/photo',
+  validate({ body: z.strictObject({ fileId: z.string().trim().min(5).max(64).regex(/^[A-Za-z0-9_-]+$/) }) }),
+  async (req, res) => {
+    if (!env.imagekitEnabled) throw badRequest('Profile photos are not set up on this server yet.');
+    const details = await fileDetails(req.valid.body.fileId);
+    if (!isUsableAvatar(details)) {
+      if (details?.fileId) await deleteFile(details.fileId);
+      throw badRequest('That picture could not be used. Upload a JPG or PNG under 2 MB.');
+    }
+
+    const user = await User.findById(req.user.id).select('+avatarFileId');
+    const previous = user.avatarFileId;
+    user.avatarUrl = details.url;
+    user.avatarFileId = details.fileId;
+    await user.save();
+    if (previous && previous !== details.fileId) await deleteFile(previous);
+
+    res.json({ user });
+  },
+);
+
+router.delete('/photo', async (req, res) => {
+  const user = await User.findById(req.user.id).select('+avatarFileId');
+  if (user.avatarFileId && env.imagekitEnabled) await deleteFile(user.avatarFileId);
+  user.avatarUrl = '';
+  user.avatarFileId = '';
+  await user.save();
+  res.json({ user });
+});
 
 /* Connect Gmail */
 

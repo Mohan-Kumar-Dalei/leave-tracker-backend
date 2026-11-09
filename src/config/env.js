@@ -53,6 +53,11 @@ const schema = z.object({
     .regex(/^[0-9a-f]{64}$/i, 'GMAIL_TOKEN_KEY must be 64 hex characters')
     .optional(),
 
+  // Profile photos on ImageKit. Off until all three are set.
+  IMAGEKIT_PUBLIC_KEY: z.string().optional(),
+  IMAGEKIT_PRIVATE_KEY: z.string().optional(),
+  IMAGEKIT_URL_ENDPOINT: z.string().url().optional(),
+
   // Mail signature
   COMPANY_NAME: z.string().default('Contify'),
   COMPANY_LOGO_URL: z.union([z.literal(''), z.string().url()]).default(''),
@@ -103,6 +108,7 @@ export default Object.freeze({
   weekendDays: env.WEEKEND_DAYS.split(',').map(Number),
   mailEnabled: Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS),
   mailAddress: env.MAIL_ADDRESS || env.SMTP_USER || 'leave-tracker@localhost',
+  imagekitEnabled: Boolean(env.IMAGEKIT_PUBLIC_KEY && env.IMAGEKIT_PRIVATE_KEY && env.IMAGEKIT_URL_ENDPOINT),
   gmailEnabled: Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GMAIL_TOKEN_KEY),
   googleRedirectUri: env.GOOGLE_REDIRECT_URI || `${env.APP_URL.replace(/\/$/, '')}/api/auth/google/callback`,
   leaveMailContacts,

@@ -11,6 +11,9 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, trim: true, maxlength: 20, default: '' },
     // A signature the person pasted, already cleaned. Empty means the standard one.
     signatureHtml: { type: String, maxlength: 20000, default: '' },
+    // Profile photo on ImageKit, set only after the API checked the file.
+    avatarUrl: { type: String, default: '' },
+    avatarFileId: { type: String, default: '', select: false },
     joinedOn: { type: Date },
     isActive: { type: Boolean, default: true, index: true },
 
@@ -34,6 +37,7 @@ const userSchema = new mongoose.Schema(
         delete ret.lockedUntil;
         delete ret.resetTokenHash;
         delete ret.resetTokenExpires;
+        delete ret.avatarFileId;
         return ret;
       },
     },
