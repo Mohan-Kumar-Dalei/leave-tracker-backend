@@ -18,7 +18,6 @@ const formatDay = (value) =>
   }).format(new Date(`${value}T00:00:00.000Z`));
 
 export const range = ({ from, to }) => (from === to ? formatDay(from) : `${formatDay(from)} to ${formatDay(to)}`);
-const dayCount = (days) => `${days} ${days === 1 ? 'day' : 'days'}`;
 
 function rowsHtml(rows) {
   return rows
@@ -60,57 +59,6 @@ function toText({ heading, intro, rows = [], action }) {
 
 function build(subject, content) {
   return { subject, html: layout(content), text: toText(content) };
-}
-
-export function newRequestMail({ employee, leave, typeName }) {
-  return build(`Leave request from ${employee.name}: ${range(leave)}`, {
-    heading: `${employee.name} asked for leave`,
-    intro: `${typeName} for ${dayCount(leave.days)}. This request is waiting for your decision.`,
-    rows: [
-      ['Employee', `${employee.name} (${employee.employeeId})`],
-      ['Department', employee.department || 'Not set'],
-      ['Leave type', typeName],
-      ['Dates', range(leave)],
-      ['Days', String(leave.days)],
-      ['Reason', leave.reason],
-    ],
-    action: { label: 'Review request', url: `${env.APP_URL}/admin/requests?status=pending` },
-  });
-}
-
-export function decisionMail({ leave, typeName, decision, reviewerName }) {
-  const approved = decision === 'approved';
-  const rows = [
-    ['Leave type', typeName],
-    ['Dates', range(leave)],
-    ['Days', String(leave.days)],
-    ['Decided by', reviewerName],
-  ];
-  if (leave.reviewNote) rows.push(['Note', leave.reviewNote]);
-
-  return build(`Your leave was ${decision}: ${range(leave)}`, {
-    heading: approved ? 'Your leave is approved' : 'Your leave was not approved',
-    intro: approved
-      ? `${typeName} for ${dayCount(leave.days)} is confirmed.`
-      : `${typeName} for ${dayCount(leave.days)} was rejected. The days are back in your balance.`,
-    rows,
-    action: { label: 'Open my leave', url: `${env.APP_URL}/requests` },
-  });
-}
-
-export function cancelledMail({ employee, leave, typeName, cancelledByAdmin }) {
-  return build(`Leave cancelled: ${employee.name}, ${range(leave)}`, {
-    heading: 'A leave was cancelled',
-    intro: cancelledByAdmin
-      ? `An admin cancelled this leave for ${employee.name}.`
-      : `${employee.name} cancelled this leave.`,
-    rows: [
-      ['Leave type', typeName],
-      ['Dates', range(leave)],
-      ['Days', String(leave.days)],
-    ],
-    action: { label: 'Open requests', url: `${env.APP_URL}/admin/requests` },
-  });
 }
 
 export function resetMail({ user, token }) {

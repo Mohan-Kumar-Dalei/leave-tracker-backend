@@ -8,6 +8,7 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: ['employee', 'admin'], default: 'employee', index: true },
     department: { type: String, trim: true, maxlength: 60, default: '' },
     designation: { type: String, trim: true, maxlength: 80, default: '' },
+    phone: { type: String, trim: true, maxlength: 20, default: '' },
     joinedOn: { type: Date },
     isActive: { type: Boolean, default: true, index: true },
 

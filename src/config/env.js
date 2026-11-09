@@ -32,6 +32,21 @@ const schema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   MAIL_FROM: z.string().default('Leave Tracker <no-reply@example.com>'),
+  // Leave mails go out from this mailbox under the person's own name, with
+  // Reply-To set to that person. Empty means SMTP_USER.
+  MAIL_ADDRESS: z.string().email().optional(),
+  // Copied on leave applications by default, comma separated. Each entry is an
+  // address or "Name <address>".
+  LEAVE_MAIL_CC: z.string().default(''),
+  LEAVE_MAIL_GREETING: z.string().default('Sir'),
+  DEFAULT_DESIGNATION: z.string().default('Analyst'),
+
+  // Mail signature
+  COMPANY_NAME: z.string().default('Contify'),
+  COMPANY_LOGO_URL: z.union([z.literal(''), z.string().url()]).default(''),
+  COMPANY_TRIAL_URL: z.string().url().default('https://www.contify.com/'),
+  COMPANY_DEMO_URL: z.string().url().default('https://www.contify.com/'),
+  COMPANY_LINKEDIN_URL: z.string().url().default('https://www.linkedin.com/company/contify'),
 
   SEED_ADMIN_NAME: z.string().default('Admin'),
   SEED_ADMIN_EMAIL: z.string().email().optional(),
@@ -51,6 +66,21 @@ if (!parsed.success) {
 
 const env = parsed.data;
 
+function parseContacts(value) {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const match = entry.match(/^(.*)<([^>]+)>$/);
+      const email = (match ? match[2] : entry).trim().toLowerCase();
+      const name = match ? match[1].trim().replace(/^"|"$/g, '') : '';
+      return { name: name || email, email };
+    });
+}
+
+const leaveMailContacts = parseContacts(env.LEAVE_MAIL_CC);
+
 export default Object.freeze({
   ...env,
   isProduction: env.NODE_ENV === 'production',
@@ -60,4 +90,7 @@ export default Object.freeze({
     .filter(Boolean),
   weekendDays: env.WEEKEND_DAYS.split(',').map(Number),
   mailEnabled: Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS),
+  mailAddress: env.MAIL_ADDRESS || env.SMTP_USER || 'leave-tracker@localhost',
+  leaveMailContacts,
+  leaveMailCc: leaveMailContacts.map((contact) => contact.email),
 });

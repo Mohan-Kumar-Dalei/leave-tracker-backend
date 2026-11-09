@@ -13,8 +13,9 @@
     "start": "node src/server.js",
     "seed": "node src/seed.js",
     "seed:demo": "node src/seed.js --demo",
-    "test": "node --test test/api.test.js",
-    "import:roster": "node src/importRoster.js"
+    "test": "node --test test/api.test.js test/leaveMail.test.js",
+    "import:roster": "node src/importRoster.js",
+    "mail:test": "node src/sendTestMail.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

@@ -11,7 +11,8 @@ import LeaveType from '../models/LeaveType.js';
 import User from '../models/User.js';
 import { getBalance, getBalances, getMonthlyUsage } from '../services/balances.js';
 import { sendMail } from '../services/mail.js';
-import { decisionMail, range } from '../services/mailTemplates.js';
+import { decisionMail, letterCore } from '../services/leaveMail.js';
+import { range } from '../services/mailTemplates.js';
 import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
 import { revokeAllSessions } from '../services/tokens.js';
 import { addDays, monthRange, parseDay, toDayString, todayString, yearRange } from '../utils/dates.js';
@@ -25,7 +26,7 @@ import {
   paginate,
   toCsv,
 } from '../utils/http.js';
-import { day, email, idParams, limit, objectId, page, password, year } from '../utils/schemas.js';
+import { day, email, idParams, limit, objectId, page, password, phone, year } from '../utils/schemas.js';
 
 const router = Router();
 
@@ -235,8 +236,10 @@ const reviewSchema = z
   .strictObject({
     decision: z.enum(['approved', 'rejected']),
     note: z.string().trim().max(300).optional(),
+    // The mail text the admin sends back. Empty means the usual one-line answer.
+    reply: z.string().trim().min(5, 'Write a short reply').max(4000, 'Keep the reply under 4000 characters').optional(),
   })
-  .refine((body) => body.decision === 'approved' || (body.note && body.note.length >= 3), {
+  .refine((body) => body.decision === 'approved' || (body.note?.length ?? 0) >= 3 || body.reply, {
     message: 'Tell the employee why this was rejected.',
     path: ['note'],
   });
@@ -245,10 +248,13 @@ router.patch(
   '/leaves/:id/review',
   validate({ params: idParams, body: reviewSchema }),
   async (req, res) => {
-    const { decision, note = '' } = req.valid.body;
+    const { decision, reply } = req.valid.body;
+    // Without a separate note, the middle of a rejection reply is the reason shown in the app.
+    const note = req.valid.body.note || (decision === 'rejected' && reply ? letterCore(reply).slice(0, 300) : '');
 
     const leave = await Leave.findById(req.valid.params.id)
-      .populate('user', 'name email')
+      .select('+mailMessageId')
+      .populate('user', 'name email designation phone role')
       .populate('leaveType', 'name tracksBalance');
 
     if (!leave) throw notFound('That leave request was not found.');
@@ -269,7 +275,7 @@ router.patch(
     // Matching on status means two admins cannot both decide the same request.
     const updated = await Leave.findOneAndUpdate(
       { _id: leave.id, status: 'pending' },
-      { status: decision, reviewedBy: req.user.id, reviewedAt: new Date(), reviewNote: note },
+      { status: decision, reviewedBy: req.user.id, reviewedAt: new Date(), reviewNote: note, reply },
       { returnDocument: 'after' },
     )
       .populate('user', employeeFields)
@@ -290,15 +296,16 @@ router.patch(
 
     broadcastChange();
 
-    sendMail({
-      to: leave.user.email,
-      ...decisionMail({
-        leave: json,
-        typeName: leave.leaveType.name,
+    sendMail(
+      decisionMail({
+        employee: leave.user,
+        reviewer: req.user,
+        leave: { ...json, mailMessageId: leave.mailMessageId },
         decision,
-        reviewerName: req.user.name,
+        reply,
+        note,
       }),
-    });
+    );
   },
 );
 
@@ -311,6 +318,7 @@ const employeeBody = {
   role: z.enum(['employee', 'admin']).optional(),
   department: z.string().trim().max(60).optional(),
   designation: z.string().trim().max(80).optional(),
+  phone: phone.optional(),
   joinedOn: day.optional(),
   isActive: z.boolean().optional(),
 };

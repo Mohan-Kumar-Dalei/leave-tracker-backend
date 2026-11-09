@@ -17,12 +17,20 @@ const leaveSchema = new mongoose.Schema(
     days: { type: Number, required: true, min: 0.5 },
     year: { type: Number, required: true },
     reason: { type: String, required: true, trim: true, maxlength: 500 },
+    // The mail the employee wrote and who they copied. Older leaves have neither.
+    subject: { type: String, trim: true, maxlength: 150 },
+    message: { type: String, trim: true, maxlength: 4000 },
+    cc: { type: [String], default: undefined },
+    // The admin's reply text, as mailed.
+    reply: { type: String, trim: true, maxlength: 4000 },
     status: { type: String, enum: LEAVE_STATUSES, default: 'pending', index: true },
     reviewedBy: { type: ObjectId, ref: 'User' },
     reviewedAt: { type: Date },
     reviewNote: { type: String, trim: true, maxlength: 300, default: '' },
     cancelledBy: { type: ObjectId, ref: 'User' },
     cancelledAt: { type: Date },
+    // Message-ID of the application mail, so replies land in the same thread.
+    mailMessageId: { type: String, select: false },
   },
   {
     timestamps: true,
@@ -33,6 +41,7 @@ const leaveSchema = new mongoose.Schema(
         ret.to = toDayString(ret.to);
         delete ret._id;
         delete ret.__v;
+        delete ret.mailMessageId;
         return ret;
       },
     },

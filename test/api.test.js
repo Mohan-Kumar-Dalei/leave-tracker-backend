@@ -594,3 +594,85 @@ describe('csv export', () => {
     assert.match(csv, /"'=HYPERLINK/);
   });
 });
+
+describe('mail signature details', () => {
+  it('lets everyone set a phone, and only admins their own designation', async () => {
+    const employee = await signIn(await makeUser());
+    const { body } = await employee.patch('/api/me/profile').send({ phone: '+91 98765 43210' }).expect(200);
+    assert.equal(body.user.phone, '+91 98765 43210');
+    await employee.patch('/api/me/profile').send({ designation: 'Manager' }).expect(403);
+    await employee.patch('/api/me/profile').send({ phone: '<b>1</b>' }).expect(400);
+
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const saved = await admin.patch('/api/me/profile').send({ designation: 'Assistant Manager' }).expect(200);
+    assert.equal(saved.body.user.designation, 'Assistant Manager');
+  });
+
+  it('keeps the mail thread id out of API answers', async () => {
+    const agent = await signIn(await makeUser());
+    const { body } = await apply(agent, { from: '2031-04-01', to: '2031-04-01' }).expect(201);
+    assert.equal('mailMessageId' in body.leave, false);
+    const stored = await Leave.findById(body.leave.id).select('+mailMessageId');
+    assert.match(stored.mailMessageId, /^<leave\..+@.+>$/);
+  });
+});
+
+describe('leave mail text and CC', () => {
+  it('gives the apply form a draft that follows the dates', async () => {
+    const agent = await signIn(await makeUser());
+    const { body } = await agent
+      .post('/api/leaves/preview')
+      .send({ leaveTypeId: casual.id, from: '2031-04-07', to: '2031-04-08' })
+      .expect(200);
+    assert.match(body.sentence, /two days of leave .* on \(07\/04\/2031 and 08\/04\/2031\)/);
+    assert.match(body.draft, /due to \[reason\]\./);
+  });
+
+  it('saves the mail and CC, and refuses outsiders and the placeholder', async () => {
+    await makeUser({ role: 'admin' });
+    const colleague = await makeUser();
+    const agent = await signIn(await makeUser());
+    const message = 'Hi Sir,\n\nI would like to request one day of leave due to a family function.\n\nThanks & Regards,\nMe';
+
+    await apply(agent, { reason: undefined, from: '2031-04-14', to: '2031-04-14', message, cc: ['someone@outside.test'] }).expect(400);
+    await apply(agent, { reason: undefined, from: '2031-04-14', to: '2031-04-14', message: message.replace('a family function', '[reason]') }).expect(400);
+
+    await apply(agent, { reason: undefined, from: '2031-04-14', to: '2031-04-14', message, subject: 'Leave\r\nBcc: x@y.z' }).expect(400);
+
+    const { body } = await apply(agent, {
+      reason: undefined,
+      from: '2031-04-14',
+      to: '2031-04-14',
+      subject: 'Leave for a family function',
+      message,
+      cc: [colleague.email.toUpperCase()],
+    }).expect(201);
+    assert.equal(body.leave.subject, 'Leave for a family function');
+    assert.deepEqual(body.leave.cc, [colleague.email]);
+    assert.equal(body.leave.message, message);
+    assert.equal(body.leave.reason, 'a family function');
+  });
+
+  it('stores the admin reply and uses it as the rejection reason', async () => {
+    const employee = await signIn(await makeUser());
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const { body } = await apply(employee, { from: '2031-04-21', to: '2031-04-21' }).expect(201);
+    const reply = 'Hi there,\n\nNot this week, the release is on.\n\nThanks,\nBoss';
+    const { body: reviewed } = await admin
+      .patch(`/api/admin/leaves/${body.leave.id}/review`)
+      .send({ decision: 'rejected', reply })
+      .expect(200);
+    assert.equal(reviewed.leave.reply, reply);
+    assert.equal(reviewed.leave.reviewNote, 'Not this week, the release is on.');
+  });
+
+  it('tells the compose box who the mail goes to and the signature', async () => {
+    await makeUser({ role: 'admin', name: 'Compose Admin' });
+    const agent = await signIn(await makeUser({ phone: '+91 90000 11111' }));
+    const { body } = await agent.get('/api/me/compose').expect(200);
+    assert.ok(body.to.some((person) => person.name === 'Compose Admin'));
+    assert.equal(body.signature.phone, '+91 90000 11111');
+    assert.equal(body.signature.designation, 'Analyst');
+    assert.ok(Array.isArray(body.contacts));
+  });
+});

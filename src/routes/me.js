@@ -6,10 +6,13 @@ import BalanceAdjustment from '../models/BalanceAdjustment.js';
 import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
 import { getBalances, getMonthlyUsage } from '../services/balances.js';
+import { mailContacts } from '../services/contacts.js';
+import { APPLICATION_SUBJECT, designationOf, signatureData } from '../services/leaveMail.js';
 import { isWeekend } from '../services/leaveDays.js';
 import { toDayString, todayString, yearRange } from '../utils/dates.js';
 import { pageMeta, paginate, toCsv } from '../utils/http.js';
-import { idParams, limit, page, year } from '../utils/schemas.js';
+import { forbidden } from '../utils/http.js';
+import { idParams, limit, page, phone, year } from '../utils/schemas.js';
 
 const router = Router();
 
@@ -177,5 +180,51 @@ router.patch('/adjustments/:id/dismiss', validate({ params: idParams }), async (
   await BalanceAdjustment.updateOne({ _id: req.valid.params.id, user: req.user.id }, { dismissedAt: new Date() });
   res.status(204).end();
 });
+
+// What the apply form and the admin's reply box need to show the mail before
+// it goes: who it is to, who is copied by default, who else can be copied, and
+// the signature.
+router.get('/compose', async (req, res) => {
+  const { contacts, users } = await mailContacts();
+  const admins = users.filter((user) => user.role === 'admin' && user.id !== req.user.id);
+  const to = admins.map((admin) => admin.email);
+
+  res.json({
+    greeting: env.LEAVE_MAIL_GREETING,
+    subject: APPLICATION_SUBJECT,
+    to: admins.map(({ name, email }) => ({ name, email })),
+    defaultCc: env.leaveMailContacts.filter((contact) => contact.email !== req.user.email && !to.includes(contact.email)),
+    contacts: contacts.filter((contact) => contact.email !== req.user.email),
+    signature: {
+      ...signatureData(),
+      name: req.user.name,
+      designation: designationOf(req.user),
+      phone: req.user.phone,
+      email: req.user.email,
+    },
+  });
+});
+
+// Details used in the mail signature. Everyone keeps their own phone number.
+// An employee's designation is set by an admin, so only admins change their own here.
+router.patch(
+  '/profile',
+  validate({
+    body: z.strictObject({
+      phone: phone.optional(),
+      designation: z.string().trim().max(80).optional(),
+    }),
+  }),
+  async (req, res) => {
+    const { phone: phoneNumber, designation } = req.valid.body;
+    if (designation !== undefined && req.user.role !== 'admin') {
+      throw forbidden('Ask your admin to change your designation.');
+    }
+    if (phoneNumber !== undefined) req.user.phone = phoneNumber;
+    if (designation !== undefined) req.user.designation = designation;
+    await req.user.save();
+    res.json({ user: req.user });
+  },
+);
 
 export default router;

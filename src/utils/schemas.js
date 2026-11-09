@@ -15,3 +15,9 @@ export const password = z
   .max(72, 'Use at most 72 characters')
   .regex(/[A-Za-z]/, 'Include at least one letter')
   .regex(/\d/, 'Include at least one number');
+
+export const phone = z
+  .string()
+  .trim()
+  .max(20, 'Keep the phone number under 20 characters')
+  .regex(/^[+0-9 ()-]*$/, 'Use digits, spaces and + only');
