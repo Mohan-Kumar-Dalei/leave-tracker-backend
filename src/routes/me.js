@@ -1,3 +1,4 @@
+import { gunzipSync } from 'node:zlib';
 import { Router } from 'express';
 import { z } from 'zod';
 import env from '../config/env.js';
@@ -207,6 +208,19 @@ router.get('/compose', async (req, res) => {
   });
 });
 
+const MAX_SIGNATURE_GZIP = 12000;
+// Unpacking stops at this size, so a small upload cannot expand into a huge one.
+const MAX_SIGNATURE_UNPACKED = 200000;
+
+function unpackSignature(packed) {
+  if (!packed) return '';
+  try {
+    return gunzipSync(Buffer.from(packed, 'base64'), { maxOutputLength: MAX_SIGNATURE_UNPACKED }).toString('utf8');
+  } catch {
+    throw badRequest('That signature could not be read. Paste it again.');
+  }
+}
+
 // Details used in the mail signature. Everyone keeps their own phone number.
 // An employee's designation is set by an admin, so only admins change their own here.
 router.patch(
@@ -216,10 +230,19 @@ router.patch(
       phone: phone.optional(),
       designation: z.string().trim().max(80).optional(),
       signatureHtml: z.string().max(100000, 'That signature is too long').optional(),
+      // The app sends the signature gzipped and base64 encoded. Pasted HTML is
+      // full of style attributes and often over 8 KB, which the hosting
+      // firewall blocks in a request body. It is unpacked and cleaned here.
+      signatureGzip: z
+        .string()
+        .max(MAX_SIGNATURE_GZIP, 'That signature is too long. Paste it without large pictures.')
+        .regex(/^[A-Za-z0-9+/]*={0,2}$/, 'That signature could not be read.')
+        .optional(),
     }),
   }),
   async (req, res) => {
-    const { phone: phoneNumber, designation, signatureHtml } = req.valid.body;
+    const { phone: phoneNumber, designation, signatureGzip } = req.valid.body;
+    const signatureHtml = signatureGzip !== undefined ? unpackSignature(signatureGzip) : req.valid.body.signatureHtml;
     if (designation !== undefined && req.user.role !== 'admin') {
       throw forbidden('Ask your admin to change your designation.');
     }

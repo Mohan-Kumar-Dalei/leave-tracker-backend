@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
+import { gzipSync } from 'node:zlib';
 
 process.env.NODE_ENV = 'test';
 process.env.MONGO_DB_NAME = 'leave_tracker_test';
@@ -675,6 +676,15 @@ describe('leave mail text and CC', () => {
 
     const { body: compose } = await agent.get('/api/me/compose').expect(200);
     assert.equal(compose.signature.customHtml, saved);
+
+    // The app sends it gzipped, which the hosting firewall lets through.
+    const packed = gzipSync(Buffer.from(pasted)).toString('base64');
+    const { body: unpacked } = await agent.patch('/api/me/profile').send({ signatureGzip: packed }).expect(200);
+    assert.equal(unpacked.user.signatureHtml, saved);
+    await agent.patch('/api/me/profile').send({ signatureGzip: 'bm90IGd6aXA=' }).expect(400);
+    await agent.patch('/api/me/profile').send({ signatureGzip: '<b>x</b>' }).expect(400);
+    const bomb = gzipSync(Buffer.alloc(5_000_000, 'a')).toString('base64');
+    await agent.patch('/api/me/profile').send({ signatureGzip: bomb }).expect(400);
     const { body: reset } = await agent.patch('/api/me/profile').send({ signatureHtml: '' }).expect(200);
     assert.equal(reset.user.signatureHtml, '');
   });
