@@ -41,6 +41,18 @@ const schema = z.object({
   LEAVE_MAIL_GREETING: z.string().default('Sir'),
   DEFAULT_DESIGNATION: z.string().default('Analyst'),
 
+  // "Connect Gmail": people send leave mails from their own Gmail through the
+  // Gmail API. Off until all three are set. GMAIL_TOKEN_KEY encrypts the saved
+  // Google tokens: 64 hex characters, made with
+  // node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_REDIRECT_URI: z.string().url().optional(),
+  GMAIL_TOKEN_KEY: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/i, 'GMAIL_TOKEN_KEY must be 64 hex characters')
+    .optional(),
+
   // Mail signature
   COMPANY_NAME: z.string().default('Contify'),
   COMPANY_LOGO_URL: z.union([z.literal(''), z.string().url()]).default(''),
@@ -91,6 +103,8 @@ export default Object.freeze({
   weekendDays: env.WEEKEND_DAYS.split(',').map(Number),
   mailEnabled: Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS),
   mailAddress: env.MAIL_ADDRESS || env.SMTP_USER || 'leave-tracker@localhost',
+  gmailEnabled: Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GMAIL_TOKEN_KEY),
+  googleRedirectUri: env.GOOGLE_REDIRECT_URI || `${env.APP_URL.replace(/\/$/, '')}/api/auth/google/callback`,
   leaveMailContacts,
   leaveMailCc: leaveMailContacts.map((contact) => contact.email),
 });

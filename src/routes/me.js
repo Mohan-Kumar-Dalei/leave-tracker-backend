@@ -8,6 +8,11 @@ import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
 import { getBalances, getMonthlyUsage } from '../services/balances.js';
 import { mailContacts } from '../services/contacts.js';
+import GmailLink from '../models/GmailLink.js';
+import OAuthState from '../models/OAuthState.js';
+import { STATE_COOKIE, STATE_COOKIE_PATH } from './google.js';
+import { authUrl, disconnect } from '../services/gmail.js';
+import { randomToken, sha256 } from '../services/tokens.js';
 import { cleanSignature, MAX_SIGNATURE_LENGTH } from '../services/signature.js';
 import { APPLICATION_SUBJECT, designationOf, signatureData } from '../services/leaveMail.js';
 import { isWeekend } from '../services/leaveDays.js';
@@ -220,6 +225,48 @@ function unpackSignature(packed) {
     throw badRequest('That signature could not be read. Paste it again.');
   }
 }
+
+/* Connect Gmail */
+
+const STATE_MINUTES = 10;
+
+// Whether the person's leave mails go from their own Gmail.
+router.get('/gmail', async (req, res) => {
+  const link = env.gmailEnabled ? await GmailLink.findOne({ user: req.user.id }) : null;
+  res.json({
+    available: env.gmailEnabled,
+    connected: Boolean(link && !link.brokenAt),
+    email: link?.email ?? null,
+    needsReconnect: Boolean(link?.brokenAt),
+    lastSentAt: link?.lastSentAt ?? null,
+  });
+});
+
+// Starts "Connect Gmail". The page then goes to the returned Google address.
+router.post('/gmail/connect', async (req, res) => {
+  if (!env.gmailEnabled) throw badRequest('Sending from your own Gmail is not set up on this server yet.');
+
+  const state = randomToken();
+  await OAuthState.create({
+    stateHash: sha256(state),
+    user: req.user.id,
+    expiresAt: new Date(Date.now() + STATE_MINUTES * 60 * 1000),
+  });
+  // Lax, so it comes back with Google's redirect to the callback.
+  res.cookie(STATE_COOKIE, state, {
+    httpOnly: true,
+    secure: env.COOKIE_SECURE,
+    sameSite: 'lax',
+    path: STATE_COOKIE_PATH,
+    maxAge: STATE_MINUTES * 60 * 1000,
+  });
+  res.json({ url: authUrl({ state, loginHint: req.user.email }) });
+});
+
+router.delete('/gmail', async (req, res) => {
+  await disconnect(req.user.id);
+  res.status(204).end();
+});
 
 // Details used in the mail signature. Everyone keeps their own phone number.
 // An employee's designation is set by an admin, so only admins change their own here.

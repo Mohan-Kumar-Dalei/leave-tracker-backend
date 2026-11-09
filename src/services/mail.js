@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import nodemailer from 'nodemailer';
 import env from '../config/env.js';
+import { activeLinkFor, GmailError, markBroken, sendRaw } from './gmail.js';
+import { notifyUsers } from './notify.js';
 
 const OUTBOX_DIR = path.resolve('.mail-outbox');
 
@@ -47,14 +49,50 @@ async function saveToOutbox(message) {
   console.log(`[mail] SMTP not configured, saved "${message.subject}" to ${path.relative('.', file)}`);
 }
 
+// Builds the full MIME message, the same way SMTP would send it, for the Gmail API.
+const composer = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'windows' });
+
+export async function buildRawMessage(message) {
+  const info = await composer.sendMail(message);
+  return info.message;
+}
+
+// Tries the sender's own Gmail. Returns true when Gmail took the mail.
+async function sendFromOwnGmail(sender, message) {
+  const link = await activeLinkFor(sender._id ?? sender.id);
+  if (!link) return false;
+
+  try {
+    const raw = await buildRawMessage({ ...message, from: { name: sender.name, address: link.email }, replyTo: undefined });
+    await sendRaw(link, raw);
+    return true;
+  } catch (error) {
+    console.error(`[mail] Gmail of ${link.email} could not send "${message.subject}": ${error.message}`);
+    if (error instanceof GmailError && error.broken) {
+      await markBroken(link, error.message);
+      await notifyUsers([link.user], {
+        kind: 'gmail',
+        title: 'Connect your Gmail again',
+        body: 'Google stopped accepting the connection, so your leave mails went from the app instead. Connect Gmail again in your profile.',
+        link: '/profile',
+      });
+    }
+    return false;
+  }
+}
+
 // Mail runs after the response and never fails the request. A leave must still
 // be saved and visible on the dashboard if the mail provider is down.
 //
-// `sender` is { name, email } of the person the mail speaks for. The mail leaves
-// from our own mailbox under that name, and replies go to the person.
-export async function sendMail({ to, cc, sender, subject, html, text, messageId, inReplyTo }) {
+// `sender` is the person the mail speaks for. When they connected their Gmail,
+// it goes from there, from their own address. Otherwise it leaves from the
+// app's mailbox under their name, and replies go to them.
+export async function sendMail(options) {
   if (env.isTest) return true;
+  return deliverMail(options);
+}
 
+export async function deliverMail({ to, cc, sender, subject, html, text, messageId, inReplyTo }) {
   const message = {
     from: sender ? { name: sender.name, address: env.mailAddress } : env.MAIL_FROM,
     replyTo: sender?.email,
@@ -67,6 +105,8 @@ export async function sendMail({ to, cc, sender, subject, html, text, messageId,
     inReplyTo,
     references: inReplyTo ? [inReplyTo] : undefined,
   };
+
+  if (sender && (await sendFromOwnGmail(sender, message))) return true;
 
   try {
     if (!transporter) {
