@@ -659,14 +659,17 @@ describe('leave mail text and CC', () => {
     const agent = await signIn(await makeUser());
     const pasted =
       '<div style="color:#333;position:fixed"><b>Ravi</b><br><img src="https://example.com/logo.png" onerror="alert(1)">' +
-      '<img src="http://example.com/x.png"><a href="javascript:alert(1)">bad</a> <a href="https://example.com">site</a>' +
+      '<img src="http://example.com/x.png"><img src="https://mail.google.com/mail/u/0?ui=2&attid=0.1">' +
+      '<img src="https://ci3.googleusercontent.com/meips/logo.png"><a href="javascript:alert(1)">bad</a> <a href="https://example.com">site</a>' +
       '<script>alert(1)</script><form action="https://evil.test"><input name="p"></form></div>';
     const { body } = await agent.patch('/api/me/profile').send({ signatureHtml: pasted }).expect(200);
     const saved = body.user.signatureHtml;
     assert.match(saved, /<b>Ravi<\/b>/);
     assert.match(saved, /<img src="https:\/\/example.com\/logo.png" \/>/);
     assert.match(saved, /href="https:\/\/example.com" target="_blank" rel="noopener noreferrer"/);
-    for (const unsafe of ['onerror', 'script', 'javascript:', 'http://example.com/x.png', '<form', '<input', 'position']) {
+    assert.match(saved, /<img src="https:\/\/ci3.googleusercontent.com\/meips\/logo.png" \/>/);
+    assert.equal((saved.match(/<img/g) ?? []).length, 2, 'pictures without a usable https link are dropped');
+    for (const unsafe of ['onerror', 'script', 'javascript:', 'http://example.com/x.png', 'mail.google.com', '<form', '<input', 'position']) {
       assert.equal(saved.includes(unsafe), false, unsafe);
     }
 

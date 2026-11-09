@@ -55,6 +55,10 @@ const OPTIONS = {
       display: [/^(block|inline|inline-block)$/],
     },
   },
+  // A picture without a usable address is dropped. Gmail's mail.google.com
+  // links to attached pictures only open for the signed-in sender.
+  exclusiveFilter: (frame) =>
+    frame.tag === 'img' && (!frame.attribs.src || /^https:\/\/mail\.google\.com\//i.test(frame.attribs.src)),
   // Links open outside the app and do not pass on where they came from.
   transformTags: {
     a: (tagName, attribs) => ({ tagName, attribs: { ...attribs, target: '_blank', rel: 'noopener noreferrer' } }),
