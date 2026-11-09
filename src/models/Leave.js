@@ -20,6 +20,7 @@ const leaveSchema = new mongoose.Schema(
     // The mail the employee wrote and who they copied. Older leaves have neither.
     subject: { type: String, trim: true, maxlength: 150 },
     message: { type: String, trim: true, maxlength: 4000 },
+    mailTo: { type: [String], default: undefined },
     cc: { type: [String], default: undefined },
     // The admin's reply text, as mailed.
     reply: { type: String, trim: true, maxlength: 4000 },

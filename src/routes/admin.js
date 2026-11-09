@@ -254,7 +254,7 @@ router.patch(
 
     const leave = await Leave.findById(req.valid.params.id)
       .select('+mailMessageId')
-      .populate('user', 'name email designation phone role')
+      .populate('user', 'name email designation phone role signatureHtml')
       .populate('leaveType', 'name tracksBalance');
 
     if (!leave) throw notFound('That leave request was not found.');

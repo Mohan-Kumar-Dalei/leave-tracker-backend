@@ -9,6 +9,8 @@ const userSchema = new mongoose.Schema(
     department: { type: String, trim: true, maxlength: 60, default: '' },
     designation: { type: String, trim: true, maxlength: 80, default: '' },
     phone: { type: String, trim: true, maxlength: 20, default: '' },
+    // A signature the person pasted, already cleaned. Empty means the standard one.
+    signatureHtml: { type: String, maxlength: 20000, default: '' },
     joinedOn: { type: Date },
     isActive: { type: Boolean, default: true, index: true },
 

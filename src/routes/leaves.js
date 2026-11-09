@@ -5,7 +5,7 @@ import { applyLimiter } from '../middleware/security.js';
 import { validate } from '../middleware/validate.js';
 import Leave from '../models/Leave.js';
 import { assessLeave } from '../services/leaves.js';
-import { cleanCc } from '../services/contacts.js';
+import { cleanAddresses } from '../services/contacts.js';
 import {
   applicationDraft,
   applicationMail,
@@ -45,6 +45,7 @@ const applySchema = z
       .regex(/^[^\r\n]+$/, 'Keep the subject on one line')
       .optional(),
     message: z.string().trim().min(20, 'Write a few lines for your admin').max(4000, 'Keep the mail under 4000 characters').optional(),
+    mailTo: z.array(email).min(1, 'Add at least one person in To').max(10, 'Send to at most 10 people').optional(),
     cc: z.array(email).max(15, 'Copy at most 15 people').optional(),
   })
   .refine((body) => body.reason || body.message, { message: 'Write the mail for your admin.', path: ['message'] });
@@ -73,8 +74,11 @@ router.post('/', applyLimiter, validate({ body: applySchema }), async (req, res)
   const admins = await getActiveAdmins();
   const reviewers = admins.filter((admin) => admin.id !== req.user.id);
   const mailTo = reviewers.length ? reviewers : admins;
+  // The employee may change To and CC. Without a choice, the admins get it.
+  const chosenTo = body.mailTo ? cleanAddresses(body.mailTo, [req.user.email]) : undefined;
+  if (chosenTo && chosenTo.length === 0) throw badRequest('Add at least one person other than you in To.');
   const cc = body.cc
-    ? await cleanCc(body.cc, { self: req.user.email, to: mailTo.map((admin) => admin.email) })
+    ? cleanAddresses(body.cc, [req.user.email, ...(chosenTo ?? mailTo.map((admin) => admin.email))])
     : undefined;
 
   const leave = await Leave.create({
@@ -89,6 +93,7 @@ router.post('/', applyLimiter, validate({ body: applySchema }), async (req, res)
     reason: body.reason ?? reasonFromLetter(body.message),
     subject: body.subject,
     message: body.message,
+    mailTo: chosenTo,
     cc,
     mailMessageId: newMessageId(),
   });
@@ -124,7 +129,7 @@ router.patch('/:id/cancel', validate({ params: idParams }), async (req, res) => 
   const leave = await Leave.findById(req.valid.params.id)
     .select('+mailMessageId')
     .populate('leaveType', 'name')
-    .populate('user', 'name email employeeId designation phone role');
+    .populate('user', 'name email employeeId designation phone role signatureHtml');
 
   if (!leave) throw notFound('That leave request was not found.');
 

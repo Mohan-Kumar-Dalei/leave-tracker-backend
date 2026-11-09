@@ -78,6 +78,20 @@ describe('leave mails', () => {
     assert.equal(decisionMail({ employee, reviewer: admin, leave: titled, decision: 'approved' }).subject, 'Re: Leave on Monday');
   });
 
+  it('writes to the chosen To, replies to all of them, and uses a pasted signature', () => {
+    const chosen = { ...leave, mailTo: ['asha@example.com', 'boss@example.com'], cc: ['lead@example.com'] };
+    const pasted = { ...employee, signatureHtml: '<b>Ravi K.</b><br>Team Content<br><a href="https://example.com">Site</a>' };
+    const mail = applicationMail({ employee: pasted, admins: [admin], leave: chosen, typeName: 'Casual' });
+    assert.deepEqual(mail.to, ['asha@example.com', 'boss@example.com']);
+    assert.deepEqual(mail.cc, ['lead@example.com']);
+    assert.match(mail.html, /<b>Ravi K\.<\/b><br \/>Team Content/);
+    assert.match(mail.text, /--\nRavi K\.\nTeam Content\nSite\n$/);
+    assert.equal(mail.html.includes('Free trial'), false, 'the standard signature is not added');
+
+    const reply = decisionMail({ employee, reviewer: admin, leave: chosen, decision: 'approved' });
+    assert.deepEqual(reply.cc, ['boss@example.com', 'lead@example.com']);
+  });
+
   it('pulls a short reason out of a letter', () => {
     assert.equal(reasonFromLetter('Hi Sir,\n\nI would like leave on (09/11/2026) due to personal work.\n\nThanks,\nRavi'), 'personal work');
     assert.equal(letterCore('Hi Sir,\n\nMy sister is getting married.\n\nThanks & Regards,\nRavi'), 'My sister is getting married.');

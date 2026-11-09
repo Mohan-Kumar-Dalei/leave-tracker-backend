@@ -628,29 +628,52 @@ describe('leave mail text and CC', () => {
     assert.match(body.draft, /due to \[reason\]\./);
   });
 
-  it('saves the mail and CC, and refuses outsiders and the placeholder', async () => {
+  it('saves the mail, To and CC, and refuses bad input', async () => {
     await makeUser({ role: 'admin' });
-    const colleague = await makeUser();
-    const agent = await signIn(await makeUser());
+    const me = await makeUser();
+    const agent = await signIn(me);
     const message = 'Hi Sir,\n\nI would like to request one day of leave due to a family function.\n\nThanks & Regards,\nMe';
+    const day = { reason: undefined, from: '2031-04-14', to: '2031-04-14', message };
 
-    await apply(agent, { reason: undefined, from: '2031-04-14', to: '2031-04-14', message, cc: ['someone@outside.test'] }).expect(400);
-    await apply(agent, { reason: undefined, from: '2031-04-14', to: '2031-04-14', message: message.replace('a family function', '[reason]') }).expect(400);
-
-    await apply(agent, { reason: undefined, from: '2031-04-14', to: '2031-04-14', message, subject: 'Leave\r\nBcc: x@y.z' }).expect(400);
+    await apply(agent, { ...day, cc: ['not-an-address'] }).expect(400);
+    await apply(agent, { ...day, mailTo: [] }).expect(400);
+    await apply(agent, { ...day, mailTo: [me.email] }).expect(400);
+    await apply(agent, { ...day, message: message.replace('a family function', '[reason]') }).expect(400);
+    await apply(agent, { ...day, subject: 'Leave\r\nBcc: x@y.z' }).expect(400);
 
     const { body } = await apply(agent, {
-      reason: undefined,
-      from: '2031-04-14',
-      to: '2031-04-14',
+      ...day,
       subject: 'Leave for a family function',
-      message,
-      cc: [colleague.email.toUpperCase()],
+      mailTo: ['Lead@Example.com'],
+      cc: ['lead@example.com', 'typed.by.hand@example.org', me.email],
     }).expect(201);
+    assert.equal(body.leave.to, '2031-04-14', 'the end date is untouched');
     assert.equal(body.leave.subject, 'Leave for a family function');
-    assert.deepEqual(body.leave.cc, [colleague.email]);
+    assert.deepEqual(body.leave.mailTo, ['lead@example.com']);
+    assert.deepEqual(body.leave.cc, ['typed.by.hand@example.org']);
     assert.equal(body.leave.message, message);
     assert.equal(body.leave.reason, 'a family function');
+  });
+
+  it('saves a pasted signature without anything unsafe', async () => {
+    const agent = await signIn(await makeUser());
+    const pasted =
+      '<div style="color:#333;position:fixed"><b>Ravi</b><br><img src="https://example.com/logo.png" onerror="alert(1)">' +
+      '<img src="http://example.com/x.png"><a href="javascript:alert(1)">bad</a> <a href="https://example.com">site</a>' +
+      '<script>alert(1)</script><form action="https://evil.test"><input name="p"></form></div>';
+    const { body } = await agent.patch('/api/me/profile').send({ signatureHtml: pasted }).expect(200);
+    const saved = body.user.signatureHtml;
+    assert.match(saved, /<b>Ravi<\/b>/);
+    assert.match(saved, /<img src="https:\/\/example.com\/logo.png" \/>/);
+    assert.match(saved, /href="https:\/\/example.com" target="_blank" rel="noopener noreferrer"/);
+    for (const unsafe of ['onerror', 'script', 'javascript:', 'http://example.com/x.png', '<form', '<input', 'position']) {
+      assert.equal(saved.includes(unsafe), false, unsafe);
+    }
+
+    const { body: compose } = await agent.get('/api/me/compose').expect(200);
+    assert.equal(compose.signature.customHtml, saved);
+    const { body: reset } = await agent.patch('/api/me/profile').send({ signatureHtml: '' }).expect(200);
+    assert.equal(reset.user.signatureHtml, '');
   });
 
   it('stores the admin reply and uses it as the rejection reason', async () => {

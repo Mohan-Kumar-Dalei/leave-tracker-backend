@@ -7,11 +7,12 @@ import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
 import { getBalances, getMonthlyUsage } from '../services/balances.js';
 import { mailContacts } from '../services/contacts.js';
+import { cleanSignature, MAX_SIGNATURE_LENGTH } from '../services/signature.js';
 import { APPLICATION_SUBJECT, designationOf, signatureData } from '../services/leaveMail.js';
 import { isWeekend } from '../services/leaveDays.js';
 import { toDayString, todayString, yearRange } from '../utils/dates.js';
 import { pageMeta, paginate, toCsv } from '../utils/http.js';
-import { forbidden } from '../utils/http.js';
+import { badRequest, forbidden } from '../utils/http.js';
 import { idParams, limit, page, phone, year } from '../utils/schemas.js';
 
 const router = Router();
@@ -201,6 +202,7 @@ router.get('/compose', async (req, res) => {
       designation: designationOf(req.user),
       phone: req.user.phone,
       email: req.user.email,
+      customHtml: req.user.signatureHtml,
     },
   });
 });
@@ -213,15 +215,23 @@ router.patch(
     body: z.strictObject({
       phone: phone.optional(),
       designation: z.string().trim().max(80).optional(),
+      signatureHtml: z.string().max(100000, 'That signature is too long').optional(),
     }),
   }),
   async (req, res) => {
-    const { phone: phoneNumber, designation } = req.valid.body;
+    const { phone: phoneNumber, designation, signatureHtml } = req.valid.body;
     if (designation !== undefined && req.user.role !== 'admin') {
       throw forbidden('Ask your admin to change your designation.');
     }
     if (phoneNumber !== undefined) req.user.phone = phoneNumber;
     if (designation !== undefined) req.user.designation = designation;
+    if (signatureHtml !== undefined) {
+      const cleaned = cleanSignature(signatureHtml);
+      if (cleaned.length > MAX_SIGNATURE_LENGTH) {
+        throw badRequest('That signature is too long. Paste it without large pictures.');
+      }
+      req.user.signatureHtml = cleaned;
+    }
     await req.user.save();
     res.json({ user: req.user });
   },

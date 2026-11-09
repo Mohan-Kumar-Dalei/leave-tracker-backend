@@ -1,4 +1,5 @@
 import env from '../config/env.js';
+import { cleanSignature, signatureToText } from './signature.js';
 
 // Leave mails read like the ones people already send by hand: the employee
 // writes a "Leave Application" to the admin with the team in CC, and the admin
@@ -114,7 +115,10 @@ export function signatureData() {
   };
 }
 
+// A signature the person pasted wins over the standard one. It was cleaned on
+// save and is cleaned again here, in case the rules got stricter since.
 function signatureHtml(person) {
+  if (person.signatureHtml) return cleanSignature(person.signatureHtml);
   const link = 'color:#1a73e8;text-decoration:none';
   const muted = 'color:#5f6368';
   const logo = env.COMPANY_LOGO_URL
@@ -151,6 +155,7 @@ function signatureHtml(person) {
 }
 
 function signatureText(person) {
+  if (person.signatureHtml) return signatureToText(person.signatureHtml);
   return [
     env.COMPANY_NAME,
     person.name,
@@ -202,11 +207,17 @@ const unique = (addresses, without = []) => {
 // Who the employee copied, or the usual list for leaves from before CC was chosen.
 const ccOf = (leave) => leave.cc ?? env.leaveMailCc;
 
+// Who the employee wrote to, or the admins for leaves from before To was chosen.
+const toOf = (leave, admins) => leave.mailTo ?? admins.map((admin) => admin.email);
+
+// Everyone on the first mail, for a reply to all.
+const everyoneOn = (leave) => [...(leave.mailTo ?? []), ...ccOf(leave)];
+
 /* Mails */
 
-// The employee asks the admins, with the people they chose in CC.
+// The employee asks the people in To, with the people they chose in CC.
 export function applicationMail({ employee, admins, leave, typeName }) {
-  const to = unique(admins.map((admin) => admin.email), [employee.email]);
+  const to = unique(toOf(leave, admins), [employee.email]);
   const body = leave.message || applicationDraft({ employee, leave, typeName, reason: leave.reason });
 
   return {
@@ -223,7 +234,7 @@ export function decisionMail({ employee, reviewer, leave, decision, reply, note 
   const body = reply || replyDraft({ employee, reviewer, decision, note });
   return {
     to: [employee.email],
-    cc: unique(ccOf(leave), [employee.email, reviewer.email]),
+    cc: unique(everyoneOn(leave), [employee.email, reviewer.email]),
     sender: reviewer,
     subject: replySubject(leave),
     inReplyTo: leave.mailMessageId,
@@ -234,7 +245,7 @@ export function decisionMail({ employee, reviewer, leave, decision, reply, note 
 // A cancellation also lands in the same thread, written by whoever cancelled.
 export function cancellationMail({ employee, admins, cancelledBy, leave }) {
   if (cancelledBy.id === employee.id) {
-    const to = unique(admins.map((admin) => admin.email), [employee.email]);
+    const to = unique(toOf(leave, admins), [employee.email]);
     const body = [
       `Hi ${env.LEAVE_MAIL_GREETING},`,
       `I would like to cancel my leave request ${datesPhrase(leave)}. Please ignore my earlier request.`,
@@ -257,7 +268,7 @@ export function cancellationMail({ employee, admins, cancelledBy, leave }) {
   ].join('\n\n');
   return {
     to: [employee.email],
-    cc: unique(ccOf(leave), [employee.email, cancelledBy.email]),
+    cc: unique(everyoneOn(leave), [employee.email, cancelledBy.email]),
     sender: cancelledBy,
     subject: replySubject(leave),
     inReplyTo: leave.mailMessageId,

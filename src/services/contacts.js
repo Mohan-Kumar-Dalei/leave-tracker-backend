@@ -1,10 +1,8 @@
 import env from '../config/env.js';
 import User from '../models/User.js';
-import { badRequest } from '../utils/http.js';
 
-// People a leave mail may be copied to: the usual leave list from the server
-// settings and everyone with an active account. Keeping CC to this list stops
-// the app's mailbox from being used to mail outsiders.
+// Names for addresses: the usual leave list from the server settings and
+// everyone with an active account.
 export async function mailContacts() {
   const users = await User.find({ isActive: true }).select('name email role').sort({ name: 1 });
   const contacts = [...env.leaveMailContacts];
@@ -17,18 +15,14 @@ export async function mailContacts() {
   return { contacts, users };
 }
 
-// Cleans the CC the employee chose. Their own address and the admins (who are
-// already in To) are dropped, and anyone outside the contact list is refused.
-export async function cleanCc(cc, { self, to = [] }) {
-  const { contacts } = await mailContacts();
-  const allowed = new Set(contacts.map((contact) => contact.email));
-  const skip = new Set([self, ...to].map((address) => address.toLowerCase()));
-
+// Cleans a list of typed addresses: lower case, no repeats, and without the
+// addresses in skip (the sender, or people already in To).
+export function cleanAddresses(list, skip = []) {
+  const drop = new Set(skip.map((address) => address.toLowerCase()));
   const result = [];
-  for (const address of cc) {
-    const email = address.toLowerCase();
-    if (skip.has(email) || result.includes(email)) continue;
-    if (!allowed.has(email)) throw badRequest(`${address} is not a colleague or on the usual leave list.`);
+  for (const address of list) {
+    const email = address.trim().toLowerCase();
+    if (!email || drop.has(email) || result.includes(email)) continue;
     result.push(email);
   }
   return result;
