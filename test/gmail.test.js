@@ -12,6 +12,7 @@ process.env.GOOGLE_CLIENT_ID = 'test-client.apps.googleusercontent.com';
 process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
 process.env.GMAIL_TOKEN_KEY = 'cd'.repeat(32);
 process.env.SMTP_HOST = '';
+process.env.LEAVE_MAIL_CC = 'HR Team <hr@example.com>';
 
 const { default: bcrypt } = await import('bcryptjs');
 const { default: mongoose } = await import('mongoose');
@@ -165,7 +166,7 @@ describe('connect Gmail', () => {
 describe("sending from the person's own Gmail", () => {
   const mail = (sender) => ({
     to: ['boss@example.com'],
-    cc: ['hr@example.com'],
+    cc: ['hr@example.com', 'typed@example.org'],
     sender,
     subject: 'Leave Application',
     html: '<p>Hi Sir</p>',
@@ -176,6 +177,7 @@ describe("sending from the person's own Gmail", () => {
 
   it('sends through the Gmail API from their own address', async () => {
     const user = await makeUser({ name: 'Asha Rao' });
+    await makeUser({ name: 'Boss Person', email: 'boss@example.com' });
     await connect(user);
     let sent;
     google = (url, init) => {
@@ -193,8 +195,9 @@ describe("sending from the person's own Gmail", () => {
     assert.equal(await deliverMail(mail(user)), true);
     assert.match(sent.auth, /^Bearer access-/);
     assert.match(sent.raw, new RegExp(`From: Asha Rao <${user.email}>`));
-    assert.match(sent.raw, /To: boss@example.com/);
-    assert.match(sent.raw, /Cc: hr@example.com/);
+    // Names from people's accounts and from the usual CC list; unknown addresses stay bare.
+    assert.match(sent.raw, /To: Boss Person <boss@example.com>/);
+    assert.match(sent.raw, /Cc: HR Team <hr@example.com>, typed@example.org/);
     assert.match(sent.raw, /Message-ID: <leave.1@example.com>/);
     assert.match(sent.raw, /In-Reply-To: <leave.0@example.com>/);
     assert.doesNotMatch(sent.raw, /^Reply-To:/m);

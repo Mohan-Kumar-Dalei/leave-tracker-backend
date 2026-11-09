@@ -4,6 +4,7 @@ import path from 'node:path';
 import nodemailer from 'nodemailer';
 import env from '../config/env.js';
 import { activeLinkFor, GmailError, markBroken, sendRaw } from './gmail.js';
+import User from '../models/User.js';
 import { notifyUsers } from './notify.js';
 
 const OUTBOX_DIR = path.resolve('.mail-outbox');
@@ -26,7 +27,8 @@ export function newMessageId() {
   return `<leave.${crypto.randomUUID()}@${domain}>`;
 }
 
-const list = (value) => (Array.isArray(value) ? value.join(', ') : value || '');
+const one = (entry) => (typeof entry === 'object' && entry ? `${entry.name} <${entry.address}>` : entry);
+const list = (value) => (Array.isArray(value) ? value.map(one).join(', ') : one(value) || '');
 const headerSafe = (value) => list(value).replace(/[\r\n]+/g, ' ').replace(/--/g, '- -');
 
 async function saveToOutbox(message) {
@@ -92,12 +94,29 @@ export async function sendMail(options) {
   return deliverMail(options);
 }
 
+// Puts names on addresses, so inboxes show "Rajesh Swain <rajesh@...>" and not
+// only the address. Names come from the usual CC list in the server settings
+// and from people's accounts. An address nobody knows stays as it is.
+export async function withNames(addresses = []) {
+  const list = [].concat(addresses ?? []).filter(Boolean);
+  if (list.length === 0) return list;
+
+  const names = new Map(env.leaveMailContacts.filter((c) => c.name !== c.email).map((c) => [c.email, c.name]));
+  const users = await User.find({ email: { $in: list.map((a) => String(a).toLowerCase()) } }).select('name email');
+  for (const user of users) names.set(user.email, user.name);
+
+  return list.map((address) => {
+    const name = names.get(String(address).toLowerCase());
+    return name ? { name, address } : address;
+  });
+}
+
 export async function deliverMail({ to, cc, sender, subject, html, text, messageId, inReplyTo }) {
   const message = {
     from: sender ? { name: sender.name, address: env.mailAddress } : env.MAIL_FROM,
     replyTo: sender?.email,
-    to,
-    cc: cc?.length ? cc : undefined,
+    to: await withNames(to),
+    cc: cc?.length ? await withNames(cc) : undefined,
     subject,
     html,
     text,
