@@ -19,8 +19,7 @@ import { cleanSignature, MAX_SIGNATURE_LENGTH } from '../services/signature.js';
 import { APPLICATION_SUBJECT, designationOf, signatureData } from '../services/leaveMail.js';
 import { isWeekend } from '../services/leaveDays.js';
 import { toDayString, todayString, yearRange } from '../utils/dates.js';
-import { pageMeta, paginate, toCsv } from '../utils/http.js';
-import { badRequest, forbidden } from '../utils/http.js';
+import { badRequest, pageMeta, paginate, toCsv } from '../utils/http.js';
 import { idParams, limit, page, phone, year } from '../utils/schemas.js';
 
 const router = Router();
@@ -310,14 +309,17 @@ router.delete('/gmail', async (req, res) => {
   res.status(204).end();
 });
 
-// Details used in the mail signature. Everyone keeps their own phone number.
-// An employee's designation is set by an admin, so only admins change their own here.
+// Everyone keeps their own name, phone, designation and department up to date,
+// along with the signature their leave mails end with. Email and employee ID
+// stay with the admin.
 router.patch(
   '/profile',
   validate({
     body: z.strictObject({
+      name: z.string().trim().min(2, 'Enter your full name').max(80).optional(),
       phone: phone.optional(),
       designation: z.string().trim().max(80).optional(),
+      department: z.string().trim().max(60).optional(),
       signatureHtml: z.string().max(100000, 'That signature is too long').optional(),
       // The app sends the signature gzipped and base64 encoded. Pasted HTML is
       // full of style attributes and often over 8 KB, which the hosting
@@ -330,13 +332,12 @@ router.patch(
     }),
   }),
   async (req, res) => {
-    const { phone: phoneNumber, designation, signatureGzip } = req.valid.body;
+    const { name, phone: phoneNumber, designation, department, signatureGzip } = req.valid.body;
     const signatureHtml = signatureGzip !== undefined ? unpackSignature(signatureGzip) : req.valid.body.signatureHtml;
-    if (designation !== undefined && req.user.role !== 'admin') {
-      throw forbidden('Ask your admin to change your designation.');
-    }
+    if (name !== undefined) req.user.name = name;
     if (phoneNumber !== undefined) req.user.phone = phoneNumber;
     if (designation !== undefined) req.user.designation = designation;
+    if (department !== undefined) req.user.department = department;
     if (signatureHtml !== undefined) {
       const cleaned = cleanSignature(signatureHtml);
       if (cleaned.length > MAX_SIGNATURE_LENGTH) {

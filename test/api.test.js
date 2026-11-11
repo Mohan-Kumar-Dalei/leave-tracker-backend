@@ -597,16 +597,27 @@ describe('csv export', () => {
 });
 
 describe('mail signature details', () => {
-  it('lets everyone set a phone, and only admins their own designation', async () => {
-    const employee = await signIn(await makeUser());
-    const { body } = await employee.patch('/api/me/profile').send({ phone: '+91 98765 43210' }).expect(200);
-    assert.equal(body.user.phone, '+91 98765 43210');
-    await employee.patch('/api/me/profile').send({ designation: 'Manager' }).expect(403);
-    await employee.patch('/api/me/profile').send({ phone: '<b>1</b>' }).expect(400);
+  it('lets people edit their own name, phone, designation and department only', async () => {
+    const person = await makeUser();
+    const employee = await signIn(person);
+    const { body } = await employee
+      .patch('/api/me/profile')
+      .send({ name: 'New Name', phone: '+91 98765 43210', designation: 'Senior Analyst', department: 'Content' })
+      .expect(200);
+    assert.deepEqual(
+      [body.user.name, body.user.phone, body.user.designation, body.user.department],
+      ['New Name', '+91 98765 43210', 'Senior Analyst', 'Content'],
+    );
+    assert.ok(body.user.createdAt, 'the joined date comes with the profile');
 
-    const admin = await signIn(await makeUser({ role: 'admin' }));
-    const saved = await admin.patch('/api/me/profile').send({ designation: 'Assistant Manager' }).expect(200);
-    assert.equal(saved.body.user.designation, 'Assistant Manager');
+    await employee.patch('/api/me/profile').send({ phone: '<b>1</b>' }).expect(400);
+    await employee.patch('/api/me/profile').send({ name: 'x' }).expect(400);
+    await employee.patch('/api/me/profile').send({ email: 'other@example.com' }).expect(400);
+    await employee.patch('/api/me/profile').send({ role: 'admin' }).expect(400);
+    await employee.patch('/api/me/profile').send({ employeeId: 'CON-999' }).expect(400);
+
+    const fresh = await User.findById(person._id);
+    assert.deepEqual([fresh.email, fresh.role, fresh.employeeId], [person.email, 'employee', person.employeeId]);
   });
 
   it('keeps the mail thread id out of API answers', async () => {
