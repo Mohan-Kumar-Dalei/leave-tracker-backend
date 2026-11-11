@@ -454,6 +454,14 @@ describe('balance changes', () => {
   const casualRow = (summary) => summary.balances.find((balance) => balance.leaveType.code === 'CL');
   const getSummary = async (agent) => (await agent.get(`/api/me/summary?year=${YEAR}`).expect(200)).body;
 
+  it('adds an adjustment to what is available, not to the total', async () => {
+    const { employee } = await setup();
+    await apply(employee, { from: '2031-03-03', to: '2031-03-03' }).expect(201);
+    const row = casualRow(await getSummary(employee));
+    // Casual has a quota of 3; the admin added 2; one day is pending.
+    assert.deepEqual([row.total, row.adjusted, row.booked, row.available], [3, 2, 1, 4]);
+  });
+
   it('shows a banner until the employee closes it, and again after an edit', async () => {
     const { employee, admin, url } = await setup();
 

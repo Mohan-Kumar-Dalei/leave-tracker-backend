@@ -33,11 +33,15 @@ export async function getBalances(userId, year, { includeInactive = false } = {}
     const earlier = imported.find((row) => row._id.equals(type._id))?.days ?? 0;
     const approved = usedDays(type._id, 'approved');
     const pending = usedDays(type._id, 'pending');
-    const entitled = type.annualQuota + adjusted;
+    // Total is the yearly quota alone. An admin's adjustment adds to or takes
+    // from what is available, not from the total.
+    const total = type.annualQuota;
+    const entitled = total + adjusted;
     const booked = earlier + approved + pending;
 
     return {
       leaveType: type.toJSON(),
+      total: type.tracksBalance ? total : null,
       entitled: type.tracksBalance ? entitled : null,
       adjusted,
       earlier,
