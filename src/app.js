@@ -16,6 +16,7 @@ import googleRoutes from './routes/google.js';
 import leaveRoutes from './routes/leaves.js';
 import meRoutes from './routes/me.js';
 import notificationRoutes from './routes/notifications.js';
+import teamRoutes from './routes/team.js';
 
 export function createApp() {
   const app = express();
@@ -73,6 +74,7 @@ export function createApp() {
   app.use('/api/me', requireAuth, meRoutes);
   app.use('/api/leaves', requireAuth, leaveRoutes);
   app.use('/api/notifications', requireAuth, notificationRoutes);
+  app.use('/api/team', requireAuth, teamRoutes);
   app.use('/api/admin', requireAuth, requireAdmin, adminRoutes);
   app.use('/api', requireAuth, catalogRoutes);
 

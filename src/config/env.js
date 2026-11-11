@@ -40,6 +40,9 @@ const schema = z.object({
   LEAVE_MAIL_CC: z.string().default(''),
   LEAVE_MAIL_GREETING: z.string().default('Sir'),
   DEFAULT_DESIGNATION: z.string().default('Analyst'),
+  // Used on the team page for people whose department is not set, and as the office.
+  DEFAULT_DEPARTMENT: z.string().default('Content Integration'),
+  COMPANY_LOCATION: z.string().default('Bhubaneswar'),
 
   // "Connect Gmail": people send leave mails from their own Gmail through the
   // Gmail API. Off until all three are set. GMAIL_TOKEN_KEY encrypts the saved

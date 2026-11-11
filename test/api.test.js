@@ -839,3 +839,39 @@ describe('admin records several days of leave', () => {
     assert.equal(row.available, 1);
   });
 });
+
+describe('team page', () => {
+  it('lists active people with today\'s leave, and leaves out hidden and inactive ones', async () => {
+    const { todayString } = await import('../src/utils/dates.js');
+    const today = parseDay(todayString('Asia/Kolkata'));
+    const viewer = await makeUser({ name: 'Team Viewer', designation: 'Senior Analyst', phone: '+91 90000 00009' });
+    const away = await makeUser({ name: 'Away Person' });
+    const unpaid = await makeUser({ name: 'Unpaid Person', department: 'Research' });
+    await makeUser({ name: 'Boss', role: 'admin' });
+    await makeUser({ name: 'Hidden Tester', hidden: true });
+    await makeUser({ name: 'Gone Person', isActive: false });
+
+    await Leave.create([
+      { user: away._id, leaveType: casual._id, from: today, to: today, days: 1, year: today.getUTCFullYear(), reason: 'x', status: 'approved' },
+      { user: unpaid._id, leaveType: lwp._id, from: today, to: today, days: 1, year: today.getUTCFullYear(), reason: 'x', status: 'approved' },
+    ]);
+
+    const agent = await signIn(viewer);
+    const { body } = await agent.get('/api/team').expect(200);
+    const byName = Object.fromEntries(body.members.map((member) => [member.name, member]));
+
+    assert.deepEqual(Object.keys(byName).sort(), ['Away Person', 'Boss', 'Team Viewer', 'Unpaid Person']);
+    assert.equal(body.location, 'Bhubaneswar');
+    assert.deepEqual(body.departments, ['Content Integration', 'Research']);
+    assert.deepEqual(
+      [byName['Team Viewer'].designation, byName['Team Viewer'].phone, byName['Away Person'].designation, byName['Away Person'].department],
+      ['Senior Analyst', '+91 90000 00009', 'Analyst', 'Content Integration'],
+    );
+    assert.equal(byName['Team Viewer'].leave, null);
+    assert.deepEqual([byName['Away Person'].leave.type, byName['Away Person'].leave.unpaid], ['Casual', false]);
+    assert.equal(byName['Unpaid Person'].leave.unpaid, true);
+    assert.equal('passwordHash' in byName['Boss'], false);
+
+    await request(app).get('/api/team').expect(401);
+  });
+});
