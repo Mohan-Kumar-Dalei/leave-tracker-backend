@@ -770,3 +770,72 @@ describe('hidden test accounts', () => {
     assert.equal(own.body.items.length, 1, 'the tester still sees their own leave');
   });
 });
+
+describe('admin records a leave someone took', () => {
+  it('saves it as approved on that day and takes it off what is available', async () => {
+    const person = await makeUser({ name: 'Missed Applier' });
+    const employee = await signIn(person);
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const url = `/api/admin/employees/${person.id}/leaves`;
+
+    const { body } = await admin
+      .post(url)
+      .send({ leaveTypeId: casual.id, from: '2031-03-03', to: '2031-03-03', session: 'first', note: 'Forgot to apply' })
+      .expect(201);
+    assert.deepEqual(
+      [body.leave.status, body.leave.days, body.leave.from, body.leave.session, body.leave.reason],
+      ['approved', 0.5, '2031-03-03', 'first', 'Forgot to apply'],
+    );
+    assert.ok(body.leave.recordedBy);
+
+    const summary = (await employee.get(`/api/me/summary?year=${YEAR}`).expect(200)).body;
+    const row = summary.balances.find((balance) => balance.leaveType.code === 'CL');
+    assert.deepEqual([row.approved, row.available], [0.5, 2.5]);
+
+    const notes = (await employee.get('/api/notifications').expect(200)).body;
+    assert.ok(notes.items.some((note) => note.title.includes('recorded')));
+  });
+
+  it('keeps the usual checks and names the person in the message', async () => {
+    const person = await makeUser({ name: 'Missed Applier' });
+    const employee = await signIn(person);
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const url = `/api/admin/employees/${person.id}/leaves`;
+
+    await admin.post(url).send({ leaveTypeId: casual.id, from: '2031-03-02', to: '2031-03-02' }).expect(400); // a Sunday
+    await admin.post(url).send({ leaveTypeId: casual.id, from: '2031-03-04', to: '2031-03-04' }).expect(201);
+    const overlap = await admin.post(url).send({ leaveTypeId: casual.id, from: '2031-03-04', to: '2031-03-04' }).expect(409);
+    assert.match(overlap.body.message, /^Missed Applier already has leave/);
+
+    await admin.post(url).send({ leaveTypeId: casual.id, from: '2031-03-05', to: '2031-03-05' }).expect(201);
+    await admin.post(url).send({ leaveTypeId: casual.id, from: '2031-03-06', to: '2031-03-06' }).expect(201);
+    const tooMany = await admin.post(url).send({ leaveTypeId: casual.id, from: '2031-03-07', to: '2031-03-07' }).expect(409);
+    assert.match(tooMany.body.message, /^Missed Applier has 0 Casual left/);
+
+    await employee.post(url).send({ leaveTypeId: casual.id, from: '2031-03-10', to: '2031-03-10' }).expect(403);
+  });
+});
+
+describe('admin records several days of leave', () => {
+  it('counts working days only, shows them first, and takes them off', async () => {
+    const person = await makeUser({ name: 'Range Person' });
+    const employee = await signIn(person);
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const url = `/api/admin/employees/${person.id}/leaves`;
+
+    // Saturday 8 March to Monday 10 March 2031: Sunday is not counted.
+    const preview = await admin.post(`${url}/preview`).send({ leaveTypeId: casual.id, from: '2031-03-08', to: '2031-03-10' }).expect(200);
+    assert.deepEqual([preview.body.days, preview.body.availableAfter], [2, 1]);
+
+    const { body } = await admin.post(url).send({ leaveTypeId: casual.id, from: '2031-03-08', to: '2031-03-10' }).expect(201);
+    assert.deepEqual([body.leave.from, body.leave.to, body.leave.days], ['2031-03-08', '2031-03-10', 2]);
+
+    await admin.post(url).send({ leaveTypeId: casual.id, from: '2031-03-11', to: '2031-03-12', session: 'first' }).expect(400);
+    await admin.post(`${url}/preview`).send({ leaveTypeId: casual.id, from: '2031-03-11', to: '2031-03-12' }).expect(409);
+    const lwp_ = await admin.post(url).send({ leaveTypeId: lwp.id, from: '2031-03-11', to: '2031-03-12' }).expect(201);
+    assert.equal(lwp_.body.leave.days, 2, 'leave without pay has no limit');
+
+    const row = (await employee.get(`/api/me/summary?year=${YEAR}`).expect(200)).body.balances.find((b) => b.leaveType.code === 'CL');
+    assert.equal(row.available, 1);
+  });
+});

@@ -30,6 +30,8 @@ const leaveSchema = new mongoose.Schema(
     reviewNote: { type: String, trim: true, maxlength: 300, default: '' },
     cancelledBy: { type: ObjectId, ref: 'User' },
     cancelledAt: { type: Date },
+    // Set when an admin recorded a leave the employee took but did not apply for.
+    recordedBy: { type: ObjectId, ref: 'User' },
     // Message-ID of the application mail, so replies land in the same thread.
     mailMessageId: { type: String, select: false },
   },

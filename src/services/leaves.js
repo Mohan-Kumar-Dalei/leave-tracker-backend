@@ -7,8 +7,11 @@ import { getBalance } from './balances.js';
 import { countLeaveDays } from './leaveDays.js';
 
 // Shared by the live preview in the apply form and by the real submission, so
-// what the employee sees is exactly what the server enforces.
-export async function assessLeave(user, input) {
+// what the employee sees is exactly what the server enforces. When an admin
+// records a leave for someone, the messages name that person instead of "You".
+export async function assessLeave(user, input, { forAdmin = false } = {}) {
+  const who = forAdmin ? `${user.name} has` : 'You have';
+  const whoAlready = forAdmin ? `${user.name} already has` : 'You already have';
   const { leaveTypeId, session = 'full' } = input;
   const from = parseDay(input.from);
   const to = parseDay(input.to);
@@ -49,13 +52,13 @@ export async function assessLeave(user, input) {
 
   if (overlap) {
     throw conflict(
-      `You already have leave from ${toDayString(overlap.from)} to ${toDayString(overlap.to)} in this range.`,
+      `${whoAlready} leave from ${toDayString(overlap.from)} to ${toDayString(overlap.to)} in this range.`,
     );
   }
 
   const balance = await getBalance(user.id, leaveType.id, year);
   if (leaveType.tracksBalance && days > balance.available) {
-    throw conflict(`You have ${balance.available} ${leaveType.name} left for ${year}, and this needs ${days}.`);
+    throw conflict(`${who} ${balance.available} ${leaveType.name} left for ${year}, and this needs ${days}.`);
   }
 
   return { leaveType, holiday, from, to, days, year, session, balance };

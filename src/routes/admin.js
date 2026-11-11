@@ -10,6 +10,7 @@ import Leave, { LEAVE_STATUSES } from '../models/Leave.js';
 import LeaveType from '../models/LeaveType.js';
 import User from '../models/User.js';
 import { getBalance, getBalances, getMonthlyUsage } from '../services/balances.js';
+import { assessLeave } from '../services/leaves.js';
 import { sendMail } from '../services/mail.js';
 import { decisionMail, letterCore } from '../services/leaveMail.js';
 import { range } from '../services/mailTemplates.js';
@@ -497,6 +498,78 @@ router.delete(
       title: `${leaveType.name} change of ${signedDays(days)} removed`,
       body: 'Your balance is back to what it was before this change.',
       link: '/',
+    });
+    broadcastChange();
+  },
+);
+
+// A leave the employee took but never applied for. The admin picks the days,
+// one or several, and for a single day whether it was full or half; it is
+// saved as an approved leave, so it comes off what is available and shows on
+// the right dates everywhere. The same checks as applying hold: Sundays and
+// holidays are not counted, no overlap, and enough balance.
+const recordedLeave = z.strictObject({
+  leaveTypeId: objectId,
+  from: day,
+  to: day,
+  session: z.enum(['full', 'first', 'second']).default('full'),
+  note: z.string().trim().max(300).optional(),
+});
+
+async function employeeOr404(id) {
+  const user = await User.findById(id);
+  if (!user) throw notFound('That employee was not found.');
+  return user;
+}
+
+// How many days the range counts and what would be left, before saving.
+router.post(
+  '/employees/:id/leaves/preview',
+  validate({ params: idParams, body: recordedLeave.omit({ note: true }) }),
+  async (req, res) => {
+    const user = await employeeOr404(req.valid.params.id);
+    const { days, balance, leaveType } = await assessLeave(user, req.valid.body, { forAdmin: true });
+    res.json({
+      days,
+      tracksBalance: leaveType.tracksBalance,
+      availableAfter: leaveType.tracksBalance ? balance.available - days : null,
+    });
+  },
+);
+
+router.post(
+  '/employees/:id/leaves',
+  validate({ params: idParams, body: recordedLeave }),
+  async (req, res) => {
+    const { leaveTypeId, from, to, session, note } = req.valid.body;
+    const user = await employeeOr404(req.valid.params.id);
+
+    const assessed = await assessLeave(user, { leaveTypeId, from, to, session }, { forAdmin: true });
+    const leave = await Leave.create({
+      user: user.id,
+      leaveType: assessed.leaveType.id,
+      holiday: assessed.holiday?.id,
+      from: assessed.from,
+      to: assessed.to,
+      session: assessed.session,
+      days: assessed.days,
+      year: assessed.year,
+      reason: note || 'Recorded by admin',
+      status: 'approved',
+      reviewedBy: req.user.id,
+      reviewedAt: new Date(),
+      reviewNote: 'Recorded by admin',
+      recordedBy: req.user.id,
+    });
+
+    res.status(201).json({ leave });
+
+    const days = `${assessed.days} ${assessed.days === 1 ? 'day' : 'days'}`;
+    await notifyUsers([user.id], {
+      kind: 'decision',
+      title: `Your admin recorded ${days} of leave`,
+      body: `${assessed.leaveType.name}, ${range(leave.toJSON())}`,
+      link: '/requests',
     });
     broadcastChange();
   },
