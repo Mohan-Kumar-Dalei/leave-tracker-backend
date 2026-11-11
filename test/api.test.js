@@ -723,3 +723,42 @@ describe('leave mail text and CC', () => {
     assert.ok(Array.isArray(body.contacts));
   });
 });
+
+describe('hidden test accounts', () => {
+  it('can use the app but nobody else sees them or their leave', async () => {
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const colleague = await signIn(await makeUser({ name: 'Visible Person' }));
+    const tester = await makeUser({ name: 'Hidden Tester', hidden: true });
+    const testerAgent = await signIn(tester);
+
+    const { body } = await apply(testerAgent, { from: '2031-05-05', to: '2031-05-05' }).expect(201);
+    await apply(colleague, { from: '2031-05-06', to: '2031-05-06' }).expect(201);
+
+    const employees = await admin.get('/api/admin/employees').expect(200);
+    assert.equal(employees.body.items.some((person) => person.name === 'Hidden Tester'), false);
+    assert.ok(employees.body.items.some((person) => person.name === 'Visible Person'));
+
+    const requests = await admin.get('/api/admin/leaves?status=pending').expect(200);
+    assert.equal(requests.body.items.some((leave) => leave.id === body.leave.id), false);
+    assert.equal(requests.body.total, 1);
+    const search = await admin.get('/api/admin/leaves?q=Hidden').expect(200);
+    assert.equal(search.body.total, 0);
+
+    const overview = await admin.get('/api/admin/overview').expect(200);
+    assert.equal(overview.body.pendingCount, 1);
+
+    const calendar = await colleague.get('/api/team-calendar?month=2031-05').expect(200);
+    assert.equal(calendar.body.leaves.some((leave) => leave.name === 'Hidden Tester'), false);
+    assert.equal(calendar.body.leaves.length, 1);
+
+    const compose = await colleague.get('/api/me/compose').expect(200);
+    assert.equal(compose.body.contacts.some((contact) => contact.email === tester.email), false);
+
+    const notes = await admin.get('/api/notifications').expect(200);
+    assert.equal(notes.body.items.some((note) => note.title.includes('Hidden Tester')), false);
+    assert.ok(notes.body.items.some((note) => note.title.includes('Visible Person')));
+
+    const own = await testerAgent.get('/api/me/leaves').expect(200);
+    assert.equal(own.body.items.length, 1, 'the tester still sees their own leave');
+  });
+});

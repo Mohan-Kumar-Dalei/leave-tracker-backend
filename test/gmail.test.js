@@ -24,6 +24,17 @@ const { default: Notification } = await import('../src/models/Notification.js');
 const { default: User } = await import('../src/models/User.js');
 const { open } = await import('../src/services/secretBox.js');
 const { deliverMail } = await import('../src/services/mail.js');
+const { smtp } = await import('../src/services/appPassword.js');
+const { default: AppPasswordLink } = await import('../src/models/AppPasswordLink.js');
+
+// Gmail's SMTP, swapped per test. verify() and sendMail() follow `gmailSmtp`.
+let gmailSmtp;
+smtp.create = (email, password) => ({
+  verify: async () => gmailSmtp.verify(email, password),
+  sendMail: async (message) => gmailSmtp.send(email, password, message),
+  close: () => {},
+});
+const authError = () => Object.assign(new Error('535 Username and Password not accepted'), { code: 'EAUTH', responseCode: 535 });
 
 const PASSWORD = 'correct-horse-42';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -103,7 +114,13 @@ after(async () => {
 beforeEach(async () => {
   calls = [];
   google = () => ({ status: 500, body: {} });
-  await Promise.all([User.deleteMany({}), GmailLink.deleteMany({}), Notification.deleteMany({})]);
+  gmailSmtp = { verify: async () => true, send: async () => ({}) };
+  await Promise.all([
+    User.deleteMany({}),
+    GmailLink.deleteMany({}),
+    AppPasswordLink.deleteMany({}),
+    Notification.deleteMany({}),
+  ]);
 });
 
 describe('connect Gmail', () => {
@@ -218,5 +235,81 @@ describe("sending from the person's own Gmail", () => {
     const user = await makeUser();
     assert.equal(await deliverMail(mail(user)), true);
     assert.equal(calls.length, 0);
+  });
+});
+
+describe('Gmail App Password', () => {
+  const mail = (sender) => ({
+    to: ['boss@example.com'],
+    sender,
+    subject: 'Leave Application',
+    html: '<p>Hi Sir</p>',
+    text: 'Hi Sir',
+    messageId: '<leave.9@example.com>',
+  });
+
+  it('checks the App Password with Gmail before saving it, encrypted', async () => {
+    const user = await makeUser();
+    const agent = await signIn(user);
+
+    await agent.post('/api/me/gmail/app-password').send({ appPassword: 'short' }).expect(400);
+
+    gmailSmtp.verify = async () => {
+      throw authError();
+    };
+    const refused = await agent.post('/api/me/gmail/app-password').send({ appPassword: 'abcd efgh ijkl mnop' }).expect(400);
+    assert.match(refused.body.message, /did not accept/);
+    assert.equal(await AppPasswordLink.countDocuments(), 0);
+
+    let signedInAs;
+    gmailSmtp.verify = async (email, password) => {
+      signedInAs = [email, password];
+    };
+    const { body } = await agent.post('/api/me/gmail/app-password').send({ appPassword: 'ABCD efgh IJKL mnop' }).expect(200);
+    assert.deepEqual(signedInAs, [user.email, 'abcdefghijklmnop']);
+    assert.equal(JSON.stringify(body).includes('abcd'), false);
+
+    const link = await AppPasswordLink.findOne({ user: user._id }).select('+password');
+    assert.equal(link.password.includes('abcdefghijklmnop'), false);
+    assert.equal(open(link.password), 'abcdefghijklmnop');
+
+    const status = await agent.get('/api/me/gmail').expect(200);
+    assert.deepEqual([status.body.appPassword.connected, status.body.appPassword.email], [true, user.email]);
+    assert.equal(JSON.stringify(status.body).includes('abcdefghijklmnop'), false);
+
+    await agent.delete('/api/me/gmail/app-password').expect(204);
+    assert.equal(await AppPasswordLink.countDocuments(), 0);
+  });
+
+  it('sends from their own address over Gmail SMTP', async () => {
+    const user = await makeUser({ name: 'Asha Rao' });
+    const agent = await signIn(user);
+    await agent.post('/api/me/gmail/app-password').send({ appPassword: 'abcdefghijklmnop' }).expect(200);
+
+    let sent;
+    gmailSmtp.send = async (email, password, message) => {
+      sent = { email, password, message };
+    };
+    assert.equal(await deliverMail(mail(user)), true);
+    assert.deepEqual([sent.email, sent.password], [user.email, 'abcdefghijklmnop']);
+    assert.deepEqual(sent.message.from, { name: 'Asha Rao', address: user.email });
+    assert.equal(sent.message.replyTo, undefined);
+    assert.equal(sent.message.messageId, '<leave.9@example.com>');
+  });
+
+  it('marks it and tells the person when Google stops accepting it', async () => {
+    const user = await makeUser();
+    const agent = await signIn(user);
+    await agent.post('/api/me/gmail/app-password').send({ appPassword: 'abcdefghijklmnop' }).expect(200);
+
+    gmailSmtp.send = async () => {
+      throw authError();
+    };
+    assert.equal(await deliverMail(mail(user)), true, 'the mail still goes, from the app');
+    const link = await AppPasswordLink.findOne({ user: user._id });
+    assert.ok(link.brokenAt);
+    assert.ok(await Notification.findOne({ recipient: user._id, kind: 'gmail', title: /App Password/ }));
+    const status = await agent.get('/api/me/gmail').expect(200);
+    assert.deepEqual([status.body.appPassword.connected, status.body.appPassword.needsReconnect], [false, true]);
   });
 });

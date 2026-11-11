@@ -28,6 +28,9 @@ export const passwordMailLimiter = limiter({ windowMs: 60 * 60 * 1000, limit: 5 
 
 export const applyLimiter = limiter({ windowMs: 60 * 60 * 1000, limit: 60 });
 
+// Each try signs in to Gmail, so wrong App Passwords are slowed down.
+export const appPasswordLimiter = limiter({ windowMs: 15 * 60 * 1000, limit: 10 });
+
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 // Cookies are SameSite=Strict. This is the second layer: a browser request that

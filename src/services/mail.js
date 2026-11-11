@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import nodemailer from 'nodemailer';
 import env from '../config/env.js';
+import { activeAppPasswordFor, markAppPasswordBroken, sendWithAppPassword } from './appPassword.js';
 import { activeLinkFor, GmailError, markBroken, sendRaw } from './gmail.js';
 import User from '../models/User.js';
 import { notifyUsers } from './notify.js';
@@ -83,6 +84,29 @@ async function sendFromOwnGmail(sender, message) {
   }
 }
 
+// Tries the sender's Gmail App Password. Returns true when Gmail took the mail.
+async function sendWithOwnAppPassword(sender, message) {
+  const link = await activeAppPasswordFor(sender._id ?? sender.id);
+  if (!link) return false;
+
+  try {
+    await sendWithAppPassword(link, { ...message, from: { name: sender.name, address: link.email }, replyTo: undefined });
+    return true;
+  } catch (error) {
+    console.error(`[mail] App Password of ${link.email} could not send "${message.subject}": ${error.message}`);
+    if (error.rejected) {
+      await markAppPasswordBroken(link, error.message);
+      await notifyUsers([link.user], {
+        kind: 'gmail',
+        title: 'Add your App Password again',
+        body: 'Google stopped accepting your App Password, which happens after a password change. Make a new one and add it in your profile.',
+        link: '/profile',
+      });
+    }
+    return false;
+  }
+}
+
 // Mail runs after the response and never fails the request. A leave must still
 // be saved and visible on the dashboard if the mail provider is down.
 //
@@ -126,6 +150,7 @@ export async function deliverMail({ to, cc, sender, subject, html, text, message
   };
 
   if (sender && (await sendFromOwnGmail(sender, message))) return true;
+  if (sender && (await sendWithOwnAppPassword(sender, message))) return true;
 
   try {
     if (!transporter) {

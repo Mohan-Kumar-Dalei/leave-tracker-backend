@@ -2,7 +2,9 @@ import { gunzipSync } from 'node:zlib';
 import { Router } from 'express';
 import { z } from 'zod';
 import env from '../config/env.js';
+import { appPasswordLimiter } from '../middleware/security.js';
 import { validate } from '../middleware/validate.js';
+import AppPasswordLink from '../models/AppPasswordLink.js';
 import BalanceAdjustment from '../models/BalanceAdjustment.js';
 import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
@@ -12,6 +14,13 @@ import GmailLink from '../models/GmailLink.js';
 import OAuthState from '../models/OAuthState.js';
 import { STATE_COOKIE, STATE_COOKIE_PATH } from './google.js';
 import { authUrl, disconnect } from '../services/gmail.js';
+import {
+  appPasswordAvailable,
+  checkAppPassword,
+  looksLikeAppPassword,
+  removeAppPassword,
+  saveAppPassword,
+} from '../services/appPassword.js';
 import { deleteFile, fileDetails, isUsableAvatar, uploadAuth } from '../services/imagekit.js';
 import User from '../models/User.js';
 import { randomToken, sha256 } from '../services/tokens.js';
@@ -273,14 +282,56 @@ const STATE_MINUTES = 10;
 
 // Whether the person's leave mails go from their own Gmail.
 router.get('/gmail', async (req, res) => {
-  const link = env.gmailEnabled ? await GmailLink.findOne({ user: req.user.id }) : null;
+  const [link, appLink] = await Promise.all([
+    env.gmailEnabled ? GmailLink.findOne({ user: req.user.id }) : null,
+    appPasswordAvailable() ? AppPasswordLink.findOne({ user: req.user.id }) : null,
+  ]);
   res.json({
     available: env.gmailEnabled,
     connected: Boolean(link && !link.brokenAt),
     email: link?.email ?? null,
     needsReconnect: Boolean(link?.brokenAt),
     lastSentAt: link?.lastSentAt ?? null,
+    appPassword: {
+      available: appPasswordAvailable(),
+      connected: Boolean(appLink && !appLink.brokenAt),
+      email: appLink?.email ?? req.user.email,
+      needsReconnect: Boolean(appLink?.brokenAt),
+      lastSentAt: appLink?.lastSentAt ?? null,
+    },
   });
+});
+
+// The App Password way: it must sign in to Gmail as the person's own address
+// before it is saved. It is never sent back.
+router.post(
+  '/gmail/app-password',
+  appPasswordLimiter,
+  validate({ body: z.strictObject({ appPassword: z.string().max(40) }) }),
+  async (req, res) => {
+    if (!appPasswordAvailable()) throw badRequest('Sending with an App Password is not set up on this server yet.');
+    const { appPassword } = req.valid.body;
+    if (!looksLikeAppPassword(appPassword)) {
+      throw badRequest('An App Password is 16 letters, shown by Google in four groups of four.');
+    }
+
+    const check = await checkAppPassword(req.user.email, appPassword);
+    if (!check.ok) {
+      throw badRequest(
+        check.rejected
+          ? `Google did not accept that App Password for ${req.user.email}. Make one for this exact Gmail and try again.`
+          : 'Could not reach Gmail to check it. Please try again in a minute.',
+      );
+    }
+
+    await saveAppPassword(req.user.id, req.user.email, appPassword);
+    res.json({ connected: true, email: req.user.email });
+  },
+);
+
+router.delete('/gmail/app-password', async (req, res) => {
+  await removeAppPassword(req.user.id);
+  res.status(204).end();
 });
 
 // Starts "Connect Gmail". The page then goes to the returned Google address.

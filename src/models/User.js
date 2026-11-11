@@ -16,6 +16,8 @@ const userSchema = new mongoose.Schema(
     avatarFileId: { type: String, default: '', select: false },
     joinedOn: { type: Date },
     isActive: { type: Boolean, default: true, index: true },
+    // A test account: it works, but is left out of every list others see.
+    hidden: { type: Boolean, default: false, index: true },
 
     passwordHash: { type: String, select: false },
     tokenVersion: { type: Number, default: 0, select: false },

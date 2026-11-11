@@ -103,7 +103,7 @@ router.post('/', applyLimiter, validate({ body: applySchema }), async (req, res)
   const leaveJson = leave.toJSON();
 
   await notifyUsers(
-    reviewers.map((admin) => admin.id),
+    req.user.hidden ? [] : reviewers.map((admin) => admin.id),
     {
       kind: 'request',
       title: `${req.user.name} asked for ${days} ${days === 1 ? 'day' : 'days'} of leave`,

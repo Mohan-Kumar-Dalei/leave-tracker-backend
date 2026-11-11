@@ -7,6 +7,7 @@ import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES } from '../models/Leave.js';
 import LeaveType from '../models/LeaveType.js';
 import { monthRange, parseDay, todayString, yearRange } from '../utils/dates.js';
+import { visibleLeaveOwners } from '../services/hidden.js';
 import { conflict, notFound } from '../utils/http.js';
 import { day, idParams, year } from '../utils/schemas.js';
 
@@ -119,7 +120,7 @@ router.get(
     const isAdmin = req.user.role === 'admin';
 
     const [leaves, holidays] = await Promise.all([
-      Leave.find({ status: { $in: ACTIVE_STATUSES }, from: { $lte: end }, to: { $gte: start } })
+      Leave.find({ status: { $in: ACTIVE_STATUSES }, user: await visibleLeaveOwners(), from: { $lte: end }, to: { $gte: start } })
         .populate('user', 'name')
         .populate('leaveType', 'name')
         .sort({ from: 1 }),

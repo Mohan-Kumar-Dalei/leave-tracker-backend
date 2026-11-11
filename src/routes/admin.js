@@ -13,6 +13,7 @@ import { getBalance, getBalances, getMonthlyUsage } from '../services/balances.j
 import { sendMail } from '../services/mail.js';
 import { decisionMail, letterCore } from '../services/leaveMail.js';
 import { range } from '../services/mailTemplates.js';
+import { notHidden, visibleLeaveOwners } from '../services/hidden.js';
 import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
 import { revokeAllSessions } from '../services/tokens.js';
 import { addDays, monthRange, parseDay, toDayString, todayString, yearRange } from '../utils/dates.js';
@@ -42,30 +43,31 @@ router.get('/overview', async (_req, res) => {
   const year_ = today.getUTCFullYear();
   const month = monthRange(year_, today.getUTCMonth());
 
+  const owners = await visibleLeaveOwners();
   const [pendingItems, pendingCount, awayToday, nextUp, employees, approvedThisMonth, byType, holidays, earlierYear] =
     await Promise.all([
-      Leave.find({ status: 'pending' })
+      Leave.find({ status: 'pending', user: owners })
         .populate('user', employeeFields)
         .populate('leaveType', typeFields)
         .sort({ createdAt: 1 })
         .limit(6),
-      Leave.countDocuments({ status: 'pending' }),
-      Leave.find({ status: 'approved', from: { $lte: today }, to: { $gte: today } })
+      Leave.countDocuments({ status: 'pending', user: owners }),
+      Leave.find({ status: 'approved', user: owners, from: { $lte: today }, to: { $gte: today } })
         .populate('user', employeeFields)
         .populate('leaveType', typeFields)
         .sort({ to: 1 }),
-      Leave.find({ status: 'approved', from: { $gt: today, $lte: addDays(today, 14) } })
+      Leave.find({ status: 'approved', user: owners, from: { $gt: today, $lte: addDays(today, 14) } })
         .populate('user', employeeFields)
         .populate('leaveType', typeFields)
         .sort({ from: 1 })
         .limit(8),
-      User.countDocuments({ isActive: true, role: 'employee' }),
+      User.countDocuments({ isActive: true, role: 'employee', ...notHidden }),
       Leave.aggregate([
-        { $match: { status: 'approved', from: { $gte: month.start, $lte: month.end } } },
+        { $match: { status: 'approved', user: owners, from: { $gte: month.start, $lte: month.end } } },
         { $group: { _id: null, days: { $sum: '$days' } } },
       ]),
       Leave.aggregate([
-        { $match: { status: 'approved', year: year_ } },
+        { $match: { status: 'approved', user: owners, year: year_ } },
         { $group: { _id: '$leaveType', days: { $sum: '$days' }, requests: { $sum: 1 } } },
         { $lookup: { from: 'leavetypes', localField: '_id', foreignField: '_id', as: 'type' } },
         { $unwind: '$type' },
@@ -74,7 +76,7 @@ router.get('/overview', async (_req, res) => {
       ]),
       Holiday.find({ date: { $gte: today } }).sort({ date: 1 }).limit(3),
       ImportedUsage.aggregate([
-        { $match: { year: year_ } },
+        { $match: { year: year_, user: owners } },
         { $lookup: { from: 'leavetypes', localField: 'leaveType', foreignField: '_id', as: 'type' } },
         { $unwind: '$type' },
         {
@@ -121,7 +123,7 @@ router.get(
     const { start, end } = yearRange(selectedYear);
 
     const [leaves, holidays] = await Promise.all([
-      Leave.find({ year: selectedYear, status: { $in: ['pending', 'approved'] } })
+      Leave.find({ year: selectedYear, status: { $in: ['pending', 'approved'] }, user: await visibleLeaveOwners() })
         .populate('user', 'name')
         .populate('leaveType', 'name'),
       Holiday.find({ date: { $gte: start, $lte: end } }),
@@ -168,17 +170,17 @@ const leaveQuery = z.object({
 });
 
 async function buildLeaveFilter({ status, user, leaveType, from, to, q }) {
-  const filter = {};
+  const filter = { user: await visibleLeaveOwners() };
   if (status) filter.status = status;
-  if (user) filter.user = user;
+  if (user) filter.user = { ...filter.user, $eq: user };
   if (leaveType) filter.leaveType = leaveType;
   if (from) filter.to = { $gte: parseDay(from) };
   if (to) filter.from = { $lte: parseDay(to) };
 
   if (q) {
     const pattern = new RegExp(escapeRegex(q), 'i');
-    const people = await User.find({ $or: [{ name: pattern }, { employeeId: pattern }] }).select('_id');
-    filter.user = { $in: people.map((person) => person._id) };
+    const people = await User.find({ $or: [{ name: pattern }, { employeeId: pattern }], ...notHidden }).select('_id');
+    filter.user = { ...filter.user, $in: people.map((person) => person._id) };
   }
   return filter;
 }
@@ -338,7 +340,7 @@ router.get(
     const pageInfo = paginate(req.valid.query);
 
     // Admins run the system and are not part of the employee list.
-    const filter = { role: 'employee' };
+    const filter = { role: 'employee', ...notHidden };
     if (status !== 'all') filter.isActive = status === 'active';
     if (q) {
       const pattern = new RegExp(escapeRegex(q), 'i');

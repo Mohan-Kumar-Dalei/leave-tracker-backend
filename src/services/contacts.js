@@ -4,7 +4,7 @@ import User from '../models/User.js';
 // Names for addresses: the usual leave list from the server settings and
 // everyone with an active account.
 export async function mailContacts() {
-  const users = await User.find({ isActive: true }).select('name email role').sort({ name: 1 });
+  const users = await User.find({ isActive: true, hidden: { $ne: true } }).select('name email role').sort({ name: 1 });
   const contacts = [...env.leaveMailContacts];
   const seen = new Set(contacts.map((contact) => contact.email));
   for (const user of users) {
