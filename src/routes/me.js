@@ -10,10 +10,6 @@ import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
 import { getBalances, getMonthlyUsage } from '../services/balances.js';
 import { mailContacts } from '../services/contacts.js';
-import GmailLink from '../models/GmailLink.js';
-import OAuthState from '../models/OAuthState.js';
-import { STATE_COOKIE, STATE_COOKIE_PATH } from './google.js';
-import { authUrl, disconnect } from '../services/gmail.js';
 import {
   appPasswordAvailable,
   checkAppPassword,
@@ -23,7 +19,6 @@ import {
 } from '../services/appPassword.js';
 import { deleteFile, fileDetails, isUsableAvatar, uploadAuth } from '../services/imagekit.js';
 import User from '../models/User.js';
-import { randomToken, sha256 } from '../services/tokens.js';
 import { cleanSignature, MAX_SIGNATURE_LENGTH } from '../services/signature.js';
 import { APPLICATION_SUBJECT, designationOf, signatureData } from '../services/leaveMail.js';
 import { isWeekend } from '../services/leaveDays.js';
@@ -276,29 +271,18 @@ router.delete('/photo', async (req, res) => {
   res.json({ user });
 });
 
-/* Connect Gmail */
-
-const STATE_MINUTES = 10;
+/* Send from your own Gmail, with a Gmail App Password */
 
 // Whether the person's leave mails go from their own Gmail.
 router.get('/gmail', async (req, res) => {
-  const [link, appLink] = await Promise.all([
-    env.gmailEnabled ? GmailLink.findOne({ user: req.user.id }) : null,
-    appPasswordAvailable() ? AppPasswordLink.findOne({ user: req.user.id }) : null,
-  ]);
+  const available = appPasswordAvailable();
+  const link = available ? await AppPasswordLink.findOne({ user: req.user.id }) : null;
   res.json({
-    available: env.gmailEnabled,
+    available,
     connected: Boolean(link && !link.brokenAt),
-    email: link?.email ?? null,
+    email: link?.email ?? req.user.email,
     needsReconnect: Boolean(link?.brokenAt),
     lastSentAt: link?.lastSentAt ?? null,
-    appPassword: {
-      available: appPasswordAvailable(),
-      connected: Boolean(appLink && !appLink.brokenAt),
-      email: appLink?.email ?? req.user.email,
-      needsReconnect: Boolean(appLink?.brokenAt),
-      lastSentAt: appLink?.lastSentAt ?? null,
-    },
   });
 });
 
@@ -331,32 +315,6 @@ router.post(
 
 router.delete('/gmail/app-password', async (req, res) => {
   await removeAppPassword(req.user.id);
-  res.status(204).end();
-});
-
-// Starts "Connect Gmail". The page then goes to the returned Google address.
-router.post('/gmail/connect', async (req, res) => {
-  if (!env.gmailEnabled) throw badRequest('Sending from your own Gmail is not set up on this server yet.');
-
-  const state = randomToken();
-  await OAuthState.create({
-    stateHash: sha256(state),
-    user: req.user.id,
-    expiresAt: new Date(Date.now() + STATE_MINUTES * 60 * 1000),
-  });
-  // Lax, so it comes back with Google's redirect to the callback.
-  res.cookie(STATE_COOKIE, state, {
-    httpOnly: true,
-    secure: env.COOKIE_SECURE,
-    sameSite: 'lax',
-    path: STATE_COOKIE_PATH,
-    maxAge: STATE_MINUTES * 60 * 1000,
-  });
-  res.json({ url: authUrl({ state, loginHint: req.user.email }) });
-});
-
-router.delete('/gmail', async (req, res) => {
-  await disconnect(req.user.id);
   res.status(204).end();
 });
 

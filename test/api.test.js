@@ -794,6 +794,34 @@ describe('admin records a leave someone took', () => {
 
     const notes = (await employee.get('/api/notifications').expect(200)).body;
     assert.ok(notes.items.some((note) => note.title.includes('recorded')));
+
+    // On the employee page it shows under the year's leave and the balance changes.
+    const page = (await admin.get(`/api/admin/employees/${person.id}?year=${YEAR}`).expect(200)).body;
+    assert.deepEqual(page.recent.map((leave) => leave.id), [body.leave.id]);
+    assert.deepEqual(page.recorded.map((leave) => leave.id), [body.leave.id]);
+    assert.ok(page.recorded[0].recordedBy.name);
+  });
+
+  it('lists only approved leave for the year, and can take back a recorded one', async () => {
+    const person = await makeUser({ name: 'Mixed Leave' });
+    const employee = await signIn(person);
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const applied = (await employee.post('/api/leaves').send({ leaveTypeId: casual.id, from: '2031-04-01', to: '2031-04-01', reason: 'Family function' }).expect(201)).body.leave;
+    const recorded = (await admin.post(`/api/admin/employees/${person.id}/leaves`).send({ leaveTypeId: casual.id, from: '2031-04-02', to: '2031-04-02' }).expect(201)).body.leave;
+
+    let page = (await admin.get(`/api/admin/employees/${person.id}?year=${YEAR}`).expect(200)).body;
+    assert.deepEqual(page.recent.map((leave) => leave.id), [recorded.id], 'the pending one is not listed yet');
+
+    // Only recorded leave can be taken back here, and only by an admin.
+    await admin.delete(`/api/admin/employees/${person.id}/leaves/${applied.id}`).expect(404);
+    await employee.delete(`/api/admin/employees/${person.id}/leaves/${recorded.id}`).expect(403);
+    await admin.delete(`/api/admin/employees/${person.id}/leaves/${recorded.id}`).expect(204);
+    await admin.delete(`/api/admin/employees/${person.id}/leaves/${recorded.id}`).expect(404);
+
+    page = (await admin.get(`/api/admin/employees/${person.id}?year=${YEAR}`).expect(200)).body;
+    assert.deepEqual([page.recent.length, page.recorded.length], [0, 0]);
+    const row = page.balances.find((balance) => balance.leaveType.code === 'CL');
+    assert.equal(row.approved, 0, 'the day is back in the balance');
   });
 
   it('keeps the usual checks and names the person in the message', async () => {

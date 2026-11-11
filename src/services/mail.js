@@ -4,7 +4,6 @@ import path from 'node:path';
 import nodemailer from 'nodemailer';
 import env from '../config/env.js';
 import { activeAppPasswordFor, markAppPasswordBroken, sendWithAppPassword } from './appPassword.js';
-import { activeLinkFor, GmailError, markBroken, sendRaw } from './gmail.js';
 import User from '../models/User.js';
 import { notifyUsers } from './notify.js';
 
@@ -52,38 +51,6 @@ async function saveToOutbox(message) {
   console.log(`[mail] SMTP not configured, saved "${message.subject}" to ${path.relative('.', file)}`);
 }
 
-// Builds the full MIME message, the same way SMTP would send it, for the Gmail API.
-const composer = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'windows' });
-
-export async function buildRawMessage(message) {
-  const info = await composer.sendMail(message);
-  return info.message;
-}
-
-// Tries the sender's own Gmail. Returns true when Gmail took the mail.
-async function sendFromOwnGmail(sender, message) {
-  const link = await activeLinkFor(sender._id ?? sender.id);
-  if (!link) return false;
-
-  try {
-    const raw = await buildRawMessage({ ...message, from: { name: sender.name, address: link.email }, replyTo: undefined });
-    await sendRaw(link, raw);
-    return true;
-  } catch (error) {
-    console.error(`[mail] Gmail of ${link.email} could not send "${message.subject}": ${error.message}`);
-    if (error instanceof GmailError && error.broken) {
-      await markBroken(link, error.message);
-      await notifyUsers([link.user], {
-        kind: 'gmail',
-        title: 'Connect your Gmail again',
-        body: 'Google stopped accepting the connection, so your leave mails went from the app instead. Connect Gmail again in your profile.',
-        link: '/profile',
-      });
-    }
-    return false;
-  }
-}
-
 // Tries the sender's Gmail App Password. Returns true when Gmail took the mail.
 async function sendWithOwnAppPassword(sender, message) {
   const link = await activeAppPasswordFor(sender._id ?? sender.id);
@@ -110,8 +77,8 @@ async function sendWithOwnAppPassword(sender, message) {
 // Mail runs after the response and never fails the request. A leave must still
 // be saved and visible on the dashboard if the mail provider is down.
 //
-// `sender` is the person the mail speaks for. When they connected their Gmail,
-// it goes from there, from their own address. Otherwise it leaves from the
+// `sender` is the person the mail speaks for. When they saved a Gmail App
+// Password, it goes from their own address. Otherwise it leaves from the
 // app's mailbox under their name, and replies go to them.
 export async function sendMail(options) {
   if (env.isTest) return true;
@@ -149,7 +116,6 @@ export async function deliverMail({ to, cc, sender, subject, html, text, message
     references: inReplyTo ? [inReplyTo] : undefined,
   };
 
-  if (sender && (await sendFromOwnGmail(sender, message))) return true;
   if (sender && (await sendWithOwnAppPassword(sender, message))) return true;
 
   try {

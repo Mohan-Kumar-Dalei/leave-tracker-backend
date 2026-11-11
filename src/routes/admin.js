@@ -382,20 +382,28 @@ router.get(
     const user = await User.findById(req.valid.params.id);
     if (!user) throw notFound('That employee was not found.');
 
-    const [balances, monthly, adjustments, recent] = await Promise.all([
+    const [balances, monthly, adjustments, recent, recorded] = await Promise.all([
       getBalances(user.id, selectedYear),
       getMonthlyUsage(user.id, selectedYear),
       BalanceAdjustment.find({ user: user.id, year: selectedYear })
         .populate('leaveType', 'name')
         .populate('createdBy', 'name')
         .sort({ createdAt: -1 }),
-      Leave.find({ user: user.id, year: selectedYear })
+      // Leave in the year: everything approved, applied for or recorded by an admin.
+      Leave.find({ user: user.id, year: selectedYear, status: 'approved' })
         .populate('leaveType', typeFields)
+        .populate('recordedBy', 'name')
         .sort({ from: -1 })
-        .limit(20),
+        .limit(100),
+      // Leave an admin recorded with "Adjust balance". It also shows with the
+      // balance changes, since it came from there.
+      Leave.find({ user: user.id, year: selectedYear, status: 'approved', recordedBy: { $exists: true } })
+        .populate('leaveType', typeFields)
+        .populate('recordedBy', 'name')
+        .sort({ createdAt: -1 }),
     ]);
 
-    res.json({ user, year: selectedYear, balances, monthly, adjustments, recent });
+    res.json({ user, year: selectedYear, balances, monthly, adjustments, recent, recorded });
   },
 );
 
@@ -569,6 +577,34 @@ router.post(
       kind: 'decision',
       title: `Your admin recorded ${days} of leave`,
       body: `${assessed.leaveType.name}, ${range(leave.toJSON())}`,
+      link: '/requests',
+    });
+    broadcastChange();
+  },
+);
+
+// Takes back a leave an admin recorded by mistake. It is kept as cancelled, so
+// the history stays, and the days go back to the balance. Leave the person
+// applied for themselves is not touched here.
+router.delete(
+  '/employees/:id/leaves/:leaveId',
+  validate({ params: z.object({ id: objectId, leaveId: objectId }) }),
+  async (req, res) => {
+    const { id, leaveId } = req.valid.params;
+    const leave = await Leave.findOneAndUpdate(
+      { _id: leaveId, user: id, status: 'approved', recordedBy: { $exists: true } },
+      { status: 'cancelled', cancelledBy: req.user.id, cancelledAt: new Date() },
+      { new: true },
+    ).populate('leaveType', 'name');
+    if (!leave) throw notFound('That recorded leave was not found.');
+
+    res.status(204).end();
+
+    const days = `${leave.days} ${leave.days === 1 ? 'day' : 'days'}`;
+    await notifyUsers([id], {
+      kind: 'decision',
+      title: `Your admin removed ${days} of recorded leave`,
+      body: `${leave.leaveType?.name}, ${range(leave.toJSON())}. The days are back in your balance.`,
       link: '/requests',
     });
     broadcastChange();

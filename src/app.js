@@ -12,7 +12,6 @@ import { apiLimiter, originCheck, sanitizeBody } from './middleware/security.js'
 import adminRoutes from './routes/admin.js';
 import authRoutes from './routes/auth.js';
 import catalogRoutes from './routes/catalog.js';
-import googleRoutes from './routes/google.js';
 import leaveRoutes from './routes/leaves.js';
 import meRoutes from './routes/me.js';
 import notificationRoutes from './routes/notifications.js';
@@ -69,7 +68,6 @@ export function createApp() {
   });
 
   app.use('/api', apiLimiter);
-  app.use('/api/auth/google', googleRoutes);
   app.use('/api/auth', authRoutes);
   app.use('/api/me', requireAuth, meRoutes);
   app.use('/api/leaves', requireAuth, leaveRoutes);

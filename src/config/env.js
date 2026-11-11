@@ -44,13 +44,10 @@ const schema = z.object({
   DEFAULT_DEPARTMENT: z.string().default('Content Integration'),
   COMPANY_LOCATION: z.string().default('Bhubaneswar'),
 
-  // "Connect Gmail": people send leave mails from their own Gmail through the
-  // Gmail API. Off until all three are set. GMAIL_TOKEN_KEY encrypts the saved
-  // Google tokens: 64 hex characters, made with
+  // People send leave mails from their own Gmail with a Gmail App Password.
+  // Off until GMAIL_TOKEN_KEY is set; it encrypts the saved App Passwords:
+  // 64 hex characters, made with
   // node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-  GOOGLE_CLIENT_ID: z.string().optional(),
-  GOOGLE_CLIENT_SECRET: z.string().optional(),
-  GOOGLE_REDIRECT_URI: z.string().url().optional(),
   GMAIL_TOKEN_KEY: z
     .string()
     .regex(/^[0-9a-f]{64}$/i, 'GMAIL_TOKEN_KEY must be 64 hex characters')
@@ -112,8 +109,6 @@ export default Object.freeze({
   mailEnabled: Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS),
   mailAddress: env.MAIL_ADDRESS || env.SMTP_USER || 'leave-tracker@localhost',
   imagekitEnabled: Boolean(env.IMAGEKIT_PUBLIC_KEY && env.IMAGEKIT_PRIVATE_KEY && env.IMAGEKIT_URL_ENDPOINT),
-  gmailEnabled: Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GMAIL_TOKEN_KEY),
-  googleRedirectUri: env.GOOGLE_REDIRECT_URI || `${env.APP_URL.replace(/\/$/, '')}/api/auth/google/callback`,
   leaveMailContacts,
   leaveMailCc: leaveMailContacts.map((contact) => contact.email),
 });
