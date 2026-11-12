@@ -97,7 +97,10 @@ router.post(
         { _id: user._id },
         { resetTokenHash: sha256(token), resetTokenExpires: new Date(Date.now() + RESET_TTL_MS) },
       );
-      sendMail({ to: user.email, ...resetMail({ user, token }) });
+      // Sent as the person themselves: with their saved Gmail App Password it
+      // goes from their own Gmail to their own inbox. The server has no
+      // mailbox of its own, so without one it waits in the outbox.
+      sendMail({ to: user.email, sender: user, ...resetMail({ user, token }) });
     }
 
     // Same answer either way, so this cannot reveal who has an account.

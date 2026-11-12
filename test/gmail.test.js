@@ -127,6 +127,25 @@ describe('Gmail App Password', () => {
     assert.equal(await AppPasswordLink.countDocuments(), 0);
   });
 
+  it('sends the forgot password mail from their own Gmail to themselves', async () => {
+    const { resetMail } = await import('../src/services/mailTemplates.js');
+    const user = await makeUser({ name: 'Asha Rao' });
+    const agent = await signIn(user);
+    await agent.post('/api/me/gmail/app-password').send({ appPassword: 'abcdefghijklmnop' }).expect(200);
+
+    let sent;
+    gmailSmtp.send = async (email, password, message) => {
+      sent = { email, message };
+    };
+    // The same options the forgot password route sends with.
+    assert.equal(await deliverMail({ to: user.email, sender: user, ...resetMail({ user, token: 'tok-123' }) }), true);
+    assert.equal(sent.email, user.email, 'signed in to Gmail as the person');
+    assert.deepEqual(sent.message.from, { name: 'Asha Rao', address: user.email });
+    assert.deepEqual(sent.message.to.map((to) => to.address ?? to), [user.email]);
+    assert.match(sent.message.subject, /Reset your .* password/);
+    assert.match(sent.message.html, /reset-password\?token=tok-123/);
+  });
+
   it('sends from their own address over Gmail SMTP', async () => {
     const user = await makeUser({ name: 'Asha Rao' });
     const agent = await signIn(user);

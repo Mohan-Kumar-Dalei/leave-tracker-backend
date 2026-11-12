@@ -533,6 +533,18 @@ describe('notifications', () => {
     assert.equal(body.items.length, 0);
     assert.equal(body.unread, 0);
   });
+
+  it('clears read notifications an hour after reading and keeps unread ones', async () => {
+    const { default: Notification, READ_KEEP_SECONDS } = await import('../src/models/Notification.js');
+    await Notification.syncIndexes();
+    const indexes = await Notification.collection.indexes();
+    const onRead = indexes.find((index) => index.key.readAt === 1);
+    assert.equal(READ_KEEP_SECONDS, 3600);
+    assert.equal(onRead?.expireAfterSeconds, 3600, 'MongoDB removes them an hour after readAt');
+    // An index on readAt skips documents without it, so unread ones are never touched.
+    const onCreated = indexes.find((index) => index.key.createdAt === 1 && index.expireAfterSeconds);
+    assert.equal(onCreated?.expireAfterSeconds, 60 * 60 * 24 * 180, 'unread ones still go after 180 days');
+  });
 });
 
 describe('admin schedule', () => {
