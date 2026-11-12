@@ -708,6 +708,30 @@ describe('leave mail text and CC', () => {
     assert.equal(reset.user.signatureHtml, '');
   });
 
+  it('trims blank lines and extra space from a pasted signature, even a long one', async () => {
+    const agent = await signIn(await makeUser());
+    const blank = '<div><br></div><div>&nbsp;</div><p> </p>\n\n';
+    // Gmail repeats a long style on every piece, and leaves empty tags behind.
+    const style = 'font-family:Arial,Helvetica,sans-serif;font-size:13px;color:rgb(34,34,34);line-height:18px;margin:0px;padding:0px';
+    const lines = Array.from(
+      { length: 120 },
+      (_, i) => `<div style="${style}"><span style="${style}">Line   ${i}</span><span style="${style}"></span><font>  </font></div>`,
+    ).join('\n');
+    const pasted = `${blank.repeat(5)}${lines}${blank.repeat(5)}`;
+    assert.ok(pasted.length > 20000, 'longer than the old limit');
+
+    const packed = gzipSync(Buffer.from(pasted)).toString('base64');
+    const { body } = await agent.patch('/api/me/profile').send({ signatureGzip: packed }).expect(200);
+    const saved = body.user.signatureHtml;
+    assert.match(saved, /^<div style="[^"]+"><span style="[^"]+">Line 0<\/span><\/div>/, 'no blank lines at the start');
+    assert.match(saved, /Line 119<\/span><\/div>$/, 'no blank lines at the end');
+    assert.equal(saved.includes('<font>'), false, 'empty tags are gone');
+    assert.equal(/\s{2,}/.test(saved), false, 'no runs of spaces');
+
+    const middle = (await agent.patch('/api/me/profile').send({ signatureHtml: `<b>A</b>${blank.repeat(4)}<b>B</b>` }).expect(200)).body;
+    assert.equal(middle.user.signatureHtml, '<b>A</b><br><br><b>B</b>', 'many blank lines become one');
+  });
+
   it('stores the admin reply and uses it as the rejection reason', async () => {
     const employee = await signIn(await makeUser());
     const admin = await signIn(await makeUser({ role: 'admin' }));

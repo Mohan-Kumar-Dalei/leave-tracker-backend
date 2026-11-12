@@ -1,4 +1,5 @@
 import sanitizeHtml from 'sanitize-html';
+import { trimSignature } from './trimSignature.js';
 
 // People paste their own mail signature, copied from Gmail or Outlook. Only
 // plain formatting, links and https images survive, so a pasted signature can
@@ -68,10 +69,13 @@ const OPTIONS = {
 // The tags the transform adds must also be allowed.
 OPTIONS.allowedAttributes.a.push('target', 'rel');
 
-export const MAX_SIGNATURE_LENGTH = 20000;
+// Gmail signatures repeat their styles on every piece, so the saved HTML can
+// be long while still small to send (it travels gzipped).
+export const MAX_SIGNATURE_LENGTH = 60000;
 
+// Cleaned, then trimmed of blank lines and extra space.
 export function cleanSignature(html = '') {
-  return sanitizeHtml(String(html), OPTIONS).trim();
+  return trimSignature(sanitizeHtml(String(html), OPTIONS));
 }
 
 // A plain text copy for the text part of the mail.

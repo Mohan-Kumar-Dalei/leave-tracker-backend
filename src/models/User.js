@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { MAX_SIGNATURE_LENGTH } from '../services/signature.js';
 
 const userSchema = new mongoose.Schema(
   {
@@ -10,7 +11,9 @@ const userSchema = new mongoose.Schema(
     designation: { type: String, trim: true, maxlength: 80, default: '' },
     phone: { type: String, trim: true, maxlength: 20, default: '' },
     // A signature the person pasted, already cleaned. Empty means the standard one.
-    signatureHtml: { type: String, maxlength: 20000, default: '' },
+    // The same limit the profile route checks, so a long Gmail signature that
+    // passed there is not refused here with a vague error.
+    signatureHtml: { type: String, maxlength: MAX_SIGNATURE_LENGTH, default: '' },
     // Profile photo on ImageKit, set only after the API checked the file.
     avatarUrl: { type: String, default: '' },
     avatarFileId: { type: String, default: '', select: false },
