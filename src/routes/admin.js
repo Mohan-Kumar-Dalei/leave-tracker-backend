@@ -9,7 +9,14 @@ import ImportedUsage from '../models/ImportedUsage.js';
 import Leave, { LEAVE_STATUSES } from '../models/Leave.js';
 import LeaveType from '../models/LeaveType.js';
 import User from '../models/User.js';
-import { getBalance, getBalances, getMonthlyUsage } from '../services/balances.js';
+import {
+  BALANCE_HEADERS,
+  balanceCells,
+  balanceLookup,
+  getBalance,
+  getBalances,
+  getMonthlyUsage,
+} from '../services/balances.js';
 import { assessLeave } from '../services/leaves.js';
 import { sendMail } from '../services/mail.js';
 import { decisionMail, letterCore } from '../services/leaveMail.js';
@@ -214,9 +221,11 @@ router.get('/leaves.csv', validate({ query: leaveQuery }), async (req, res) => {
     .sort({ from: -1 })
     .limit(10000);
 
-  const csv = toCsv(
-    ['Employee ID', 'Employee', 'Department', 'Leave type', 'From', 'To', 'Days', 'Status', 'Reason', 'Decided by', 'Note'],
-    leaves.map((leave) => [
+  // Each row also carries the person's balance for that leave type, for the
+  // leave's year, as it stands now.
+  const lookup = balanceLookup();
+  const rows = await Promise.all(
+    leaves.map(async (leave) => [
       leave.user?.employeeId,
       leave.user?.name,
       leave.user?.department,
@@ -228,7 +237,27 @@ router.get('/leaves.csv', validate({ query: leaveQuery }), async (req, res) => {
       leave.reason,
       leave.reviewedBy?.name,
       leave.reviewNote,
+      leave.year,
+      ...balanceCells(leave.user && leave.leaveType ? await lookup(leave.user.id, leave.leaveType.id, leave.year) : null),
     ]),
+  );
+  const csv = toCsv(
+    [
+      'Employee ID',
+      'Employee',
+      'Department',
+      'Leave type',
+      'From',
+      'To',
+      'Days',
+      'Status',
+      'Reason',
+      'Decided by',
+      'Note',
+      'Year',
+      ...BALANCE_HEADERS,
+    ],
+    rows,
   );
 
   res.set('Content-Type', 'text/csv; charset=utf-8');

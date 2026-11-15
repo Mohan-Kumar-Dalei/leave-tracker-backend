@@ -8,7 +8,7 @@ import AppPasswordLink from '../models/AppPasswordLink.js';
 import BalanceAdjustment from '../models/BalanceAdjustment.js';
 import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
-import { getBalances, getMonthlyUsage } from '../services/balances.js';
+import { BALANCE_HEADERS, balanceCells, getBalances, getMonthlyUsage } from '../services/balances.js';
 import { mailContacts } from '../services/contacts.js';
 import {
   appPasswordAvailable,
@@ -166,12 +166,15 @@ router.get(
   validate({ query: z.object({ year: year.optional() }) }),
   async (req, res) => {
     const selectedYear = req.valid.query.year ?? currentYear();
-    const leaves = await Leave.find({ user: req.user.id, year: selectedYear })
-      .populate('leaveType', 'name')
-      .sort({ from: 1 });
+    const [leaves, balances] = await Promise.all([
+      Leave.find({ user: req.user.id, year: selectedYear }).populate('leaveType', 'name').sort({ from: 1 }),
+      getBalances(req.user.id, selectedYear, { includeInactive: true }),
+    ]);
+    // Each row also shows that leave type's balance for the year, as it stands now.
+    const balanceOf = (typeId) => balances.find((balance) => balance.leaveType.id === String(typeId)) ?? null;
 
     const csv = toCsv(
-      ['From', 'To', 'Leave type', 'Days', 'Status', 'Reason'],
+      ['From', 'To', 'Leave type', 'Days', 'Status', 'Reason', ...BALANCE_HEADERS],
       leaves.map((leave) => [
         toDayString(leave.from),
         toDayString(leave.to),
@@ -179,6 +182,7 @@ router.get(
         leave.days,
         leave.status,
         leave.reason,
+        ...balanceCells(leave.leaveType ? balanceOf(leave.leaveType.id) : null),
       ]),
     );
 

@@ -614,6 +614,26 @@ describe('csv export', () => {
     const csv = toCsv(['Reason'], [['=HYPERLINK("http://evil")']]);
     assert.match(csv, /"'=HYPERLINK/);
   });
+
+  it("adds the leave type's total, applied and available days to both exports", async () => {
+    const person = await makeUser();
+    const employee = await signIn(person);
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    // Casual has 3 days a year; this asks for 2, leaving 1.
+    await apply(employee, { from: '2031-03-03', to: '2031-03-04' }).expect(201);
+
+    // Every cell is quoted; drop the quotes to compare.
+    const lines = (text) => text.replace(/^﻿/, '').replaceAll('"', '').split('\r\n');
+
+    const adminCsv = lines((await admin.get(`/api/admin/leaves.csv?user=${person.id}`).expect(200)).text);
+    assert.match(adminCsv[0], /,Year,Total leave,Applied,Available$/);
+    assert.equal(adminCsv.length, 2);
+    assert.match(adminCsv[1], /,2031,3,2,1$/);
+
+    const ownCsv = lines((await employee.get('/api/me/leaves.csv?year=2031').expect(200)).text);
+    assert.match(ownCsv[0], /,Total leave,Applied,Available$/);
+    assert.match(ownCsv[1], /,3,2,1$/);
+  });
 });
 
 describe('mail signature details', () => {

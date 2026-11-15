@@ -58,6 +58,27 @@ export async function getBalance(userId, leaveTypeId, year) {
   return balances.find((balance) => balance.leaveType.id === String(leaveTypeId));
 }
 
+// For exports with many rows: looks up a person's balance for a leave type
+// and year, working each person's balances out once per year.
+export function balanceLookup() {
+  const cache = new Map();
+  return async (userId, leaveTypeId, year) => {
+    const key = `${userId}:${year}`;
+    if (!cache.has(key)) cache.set(key, getBalances(userId, year, { includeInactive: true }));
+    const balances = await cache.get(key);
+    return balances.find((balance) => balance.leaveType.id === String(leaveTypeId)) ?? null;
+  };
+}
+
+// The balance columns of a CSV row: Total leave, Applied, Available. A type
+// without a yearly limit (Leave Without Pay) shows "No limit".
+export const BALANCE_HEADERS = ['Total leave', 'Applied', 'Available'];
+export function balanceCells(balance) {
+  if (!balance) return ['', '', ''];
+  const limited = balance.leaveType.tracksBalance;
+  return [limited ? balance.total : 'No limit', balance.booked, limited ? balance.available : 'No limit'];
+}
+
 // Days used per month, January first. A leave counts in the month it starts.
 export async function getMonthlyUsage(userId, year) {
   const user = new mongoose.Types.ObjectId(userId);
