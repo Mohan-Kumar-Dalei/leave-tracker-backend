@@ -1,3 +1,4 @@
+import { withPosition } from '../services/scope.js';
 import bcrypt from 'bcryptjs';
 import { Router } from 'express';
 import { z } from 'zod';
@@ -66,13 +67,13 @@ router.post(
     await user.save();
 
     await startSession(res, user);
-    res.json({ user });
+    res.json({ user: await withPosition(user) });
   },
 );
 
 router.post('/refresh', refreshLimiter, async (req, res) => {
   const user = await rotateSession(req, res);
-  res.json({ user });
+  res.json({ user: await withPosition(user) });
 });
 
 router.post('/logout', async (req, res) => {
@@ -80,8 +81,8 @@ router.post('/logout', async (req, res) => {
   res.status(204).end();
 });
 
-router.get('/me', requireAuth, (req, res) => {
-  res.json({ user: req.user });
+router.get('/me', requireAuth, async (req, res) => {
+  res.json({ user: await withPosition(req.user) });
 });
 
 router.post(

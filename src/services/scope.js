@@ -19,6 +19,21 @@ const id = (value) => String(value?._id ?? value ?? '');
 
 export const isStaff = (user) => user?.role === 'admin' || user?.role === 'owner';
 
+// A person's place, which also names their part of the app's URLs:
+// /employee/<id>, /employee/assistantmanager/<id>, /employee/manager/<id>,
+// /employee/hr/<id>.
+export async function positionOf(user) {
+  if (user.role === 'owner') return 'hr';
+  if (user.role !== 'admin') return 'employee';
+  if (await Department.exists({ manager: user._id })) return 'manager';
+  return 'assistantmanager';
+}
+
+// The user as the app receives it: their record plus their position.
+export async function withPosition(user) {
+  return { ...user.toJSON(), position: await positionOf(user) };
+}
+
 // The department of a person, as the app shows it (empty means the default).
 export const departmentOf = (person) => person?.department || env.DEFAULT_DEPARTMENT;
 
