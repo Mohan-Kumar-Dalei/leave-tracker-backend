@@ -13,10 +13,12 @@ import { badRequest, conflict, notFound } from '../utils/http.js';
 import { email, password, phone } from '../utils/schemas.js';
 
 // The public side of the organisation, used before anyone has an account:
-//   /invite/:token  the manager or assistant manager accepts the owner's
-//                   invitation and creates their account.
+//   /setup, /owner  the company's first HR registers.
+//   /manager        a manager registers with a new department; HR approves.
+//   /invite/:token  a manager or assistant manager accepts an invitation and
+//                   creates their account.
 //   /:code          anyone with the department's join link asks to join; the
-//                   manager or assistant manager approves them.
+//                   assistant manager (or manager) approves them.
 const router = Router();
 
 const BCRYPT_COST = 12;
@@ -50,6 +52,99 @@ async function assertFree({ email: address, employeeId: id }) {
     throw conflict('A request with that email or employee ID is already waiting for approval.');
   }
 }
+
+/* Registering on your own (the Register page) */
+
+const findName = (value) => Department.findOne({ name: value }).collation({ locale: 'en', strength: 2 });
+
+// What the Register page offers: HR registers only while the company has no
+// HR yet; after that, HR invites people and managers ask HR to approve them.
+router.get('/setup', async (_req, res) => {
+  res.json({ company: env.COMPANY_NAME, location: env.COMPANY_LOCATION, ownerExists: Boolean(await User.exists({ role: 'owner' })) });
+});
+
+// The company's first HR (the owner) registers. Closed once there is one, so
+// nobody else can make themselves HR.
+router.post(
+  '/owner',
+  authLimiter,
+  validate({ body: z.strictObject({ name, email, phone: phone.optional(), password }) }),
+  async (req, res) => {
+    if (await User.exists({ role: 'owner' })) {
+      throw conflict('HR is already registered. Ask HR to invite you, or register as a manager.');
+    }
+    const body = req.valid.body;
+    if (await User.exists({ email: body.email })) throw conflict('That email already has an account. Sign in instead.');
+    const user = await User.create({
+      name: body.name,
+      email: body.email,
+      phone: body.phone,
+      employeeId: `HR-${Date.now().toString(36).toUpperCase()}`,
+      designation: 'HR',
+      department: '',
+      role: 'owner',
+      passwordHash: await bcrypt.hash(body.password, BCRYPT_COST),
+    });
+    res.status(201).json({ email: user.email });
+  },
+);
+
+// A manager registers with the department they will run. HR approves them,
+// which creates the department; then they invite their assistant manager.
+router.post(
+  '/manager',
+  authLimiter,
+  validate({
+    body: z.strictObject({
+      name,
+      email,
+      employeeId,
+      phone: phone.optional(),
+      department: z.string().trim().min(2, 'Write the department name').max(60),
+      location: z.string().trim().max(60).optional(),
+      password,
+    }),
+  }),
+  async (req, res) => {
+    const body = req.valid.body;
+    await assertFree(body);
+    if (await findName(body.department)) {
+      throw conflict(`${body.department} already exists. Ask its assistant manager for the join link.`);
+    }
+    if (
+      await JoinRequest.exists({ kind: 'manager', status: 'pending', departmentName: body.department }).collation({
+        locale: 'en',
+        strength: 2,
+      })
+    ) {
+      throw conflict(`Someone has already asked to set up ${body.department}. HR will decide.`);
+    }
+
+    const request = await JoinRequest.create({
+      kind: 'manager',
+      departmentName: body.department,
+      location: body.location ?? env.COMPANY_LOCATION,
+      name: body.name,
+      email: body.email,
+      employeeId: body.employeeId,
+      phone: body.phone ?? '',
+      designation: 'Manager',
+      passwordHash: await bcrypt.hash(body.password, BCRYPT_COST),
+    });
+    res.status(201).json({ department: request.departmentName });
+
+    const owners = await User.find({ role: 'owner', isActive: true }).select('_id');
+    await notifyUsers(
+      owners.map((owner) => owner.id),
+      {
+        kind: 'request',
+        title: `${request.name} asked to set up ${request.departmentName}`,
+        body: 'A new department and its manager are waiting for your approval.',
+        link: '/organisation',
+      },
+    );
+  },
+);
 
 router.get('/invite/:token', validate({ params: token }), async (req, res) => {
   const { invite, department } = await openInvite(req.valid.params.token);

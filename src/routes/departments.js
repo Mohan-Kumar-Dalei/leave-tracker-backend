@@ -4,10 +4,12 @@ import env from '../config/env.js';
 import { validate } from '../middleware/validate.js';
 import Department from '../models/Department.js';
 import JoinRequest from '../models/JoinRequest.js';
+import OrgInvite from '../models/OrgInvite.js';
 import User from '../models/User.js';
 import {
   arrangeTree,
   canManage,
+  createInvite,
   CASE_INSENSITIVE,
   joinCodeOf,
   leadOf,
@@ -17,7 +19,8 @@ import {
 } from '../services/departments.js';
 import { sendMail } from '../services/mail.js';
 import { notifyUsers } from '../services/notify.js';
-import { approvedMail, joinLinkMail, joinUrl } from '../services/orgMail.js';
+import { approvedMail, inviteMail, inviteUrl, joinLinkMail, joinUrl } from '../services/orgMail.js';
+import { peopleIn } from '../services/scope.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http.js';
 import { email, idParams, objectId } from '../utils/schemas.js';
 
@@ -45,7 +48,7 @@ router.get('/mine', async (req, res) => {
 router.get('/:id', validate({ params: idParams }), async (req, res) => {
   const department = await managed(req, req.valid.params.id);
   const [members, requests, code] = await Promise.all([
-    User.find({ ...memberFilter, isActive: true, department: department.name })
+    User.find({ ...memberFilter, isActive: true, ...peopleIn([department.name]) })
       .collation(CASE_INSENSITIVE)
       .select('name employeeId email designation avatarUrl reportsTo')
       .sort({ name: 1 }),
@@ -55,6 +58,13 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
 
   const manager = String(department.manager ?? '');
   const lead = String(leadOf(department) ?? '');
+  const canChooseAssistant = req.user.role === 'owner' || String(req.user._id) === manager;
+  const invited = await OrgInvite.findOne({
+    department: department._id,
+    role: 'assistant',
+    acceptedAt: { $exists: false },
+    expiresAt: { $gt: new Date() },
+  });
   res.json({
     department: {
       id: department.id,
@@ -62,7 +72,8 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
       location: department.location,
       managerName: department.managerName,
     },
-    you: { canChooseAssistant: req.user.role === 'owner' || String(req.user._id) === manager },
+    you: { canChooseAssistant, canInviteAssistant: canChooseAssistant && !lead },
+    assistantInvite: invited ? { name: invited.name, email: invited.email } : null,
     joinLink: joinUrl(code),
     members: members.map((person) => ({
       ...person.toJSON(),
@@ -72,6 +83,34 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
     requests,
   });
 });
+
+// The manager invites their assistant manager by mail; the AM registers with
+// the link and becomes the department's admin.
+router.post(
+  '/:id/assistant-invite',
+  validate({
+    params: idParams,
+    body: z.strictObject({ name: z.string().trim().min(2, 'Write the full name').max(80), email }),
+  }),
+  async (req, res) => {
+    const department = await managed(req, req.valid.params.id);
+    if (req.user.role !== 'owner' && String(department.manager ?? '') !== String(req.user._id)) {
+      throw forbidden('Only the manager invites the assistant manager.');
+    }
+    const { name, email: address } = req.valid.body;
+    if (await User.exists({ email: address })) throw conflict(`${address} already has an account.`);
+    const { invite, token } = await createInvite({
+      department,
+      role: 'assistant',
+      name,
+      email: address,
+      designation: 'Assistant Manager',
+      invitedBy: req.user._id,
+    });
+    const sent = await sendMail({ to: [address], sender: req.user, ...inviteMail({ invite, department, token, inviter: req.user }) });
+    res.status(201).json({ invite: { name, email: address, link: inviteUrl(token), sent } });
+  },
+);
 
 // A new join link; the old one stops working.
 router.post('/:id/join-link', validate({ params: idParams }), async (req, res) => {
@@ -153,7 +192,7 @@ router.put(
 
     const chosen = req.valid.body.user;
     if (chosen) {
-      const person = await User.findOne({ _id: chosen, ...memberFilter, isActive: true, department: department.name }).collation(
+      const person = await User.findOne({ _id: chosen, ...memberFilter, isActive: true, ...peopleIn([department.name]) }).collation(
         CASE_INSENSITIVE,
       );
       if (!person) throw badRequest(`Pick someone in ${department.name}.`);

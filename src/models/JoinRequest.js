@@ -1,11 +1,19 @@
 import mongoose from 'mongoose';
 
-// Someone who opened a department's join link and asked to join. They get an
-// account only when the department's manager or assistant manager approves.
-// The password they chose is kept as a bcrypt hash until then.
+// A request to join, waiting for approval:
+//   member   someone who opened a department's join link; the department's
+//            assistant manager (or manager) approves them.
+//   manager  a manager who registered on their own with a new department;
+//            HR approves them, which creates the department.
+// They get an account only when approved. The password they chose is kept as
+// a bcrypt hash until then.
 const joinRequestSchema = new mongoose.Schema(
   {
-    department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', required: true, index: true },
+    kind: { type: String, enum: ['member', 'manager'], default: 'member', index: true },
+    department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', index: true },
+    // For a manager's request: the department they want to set up.
+    departmentName: { type: String, trim: true, maxlength: 60, default: '' },
+    location: { type: String, trim: true, maxlength: 60, default: '' },
     name: { type: String, required: true, trim: true, maxlength: 80 },
     email: { type: String, required: true, lowercase: true, trim: true, maxlength: 160 },
     employeeId: { type: String, required: true, trim: true, uppercase: true, maxlength: 20 },

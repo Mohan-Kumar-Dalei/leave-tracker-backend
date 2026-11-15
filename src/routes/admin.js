@@ -85,11 +85,19 @@ router.get('/overview', async (req, res) => {
         .populate('user', employeeFields)
         .populate('leaveType', typeFields)
         .sort({ to: 1 }),
-      Leave.find({ status: 'approved', user: owners, from: { $gt: today, $lte: addDays(today, 14) } })
+      // Leave in the next 14 days, approved or still waiting for a decision.
+      // Approved leave that has already started is under "Away today".
+      Leave.find({
+        status: { $in: ['approved', 'pending'] },
+        user: owners,
+        from: { $lte: addDays(today, 14) },
+        to: { $gte: today },
+        $or: [{ from: { $gt: today } }, { status: 'pending' }],
+      })
         .populate('user', employeeFields)
         .populate('leaveType', typeFields)
         .sort({ from: 1 })
-        .limit(8),
+        .limit(12),
       User.countDocuments({ isActive: true, role: 'employee', ...notHidden, ...peopleIn(req.scope) }),
       Leave.aggregate([
         { $match: { status: 'approved', user: owners, from: { $gte: month.start, $lte: month.end } } },

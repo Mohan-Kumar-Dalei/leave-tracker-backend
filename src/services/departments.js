@@ -3,6 +3,7 @@ import env from '../config/env.js';
 import Department from '../models/Department.js';
 import OrgInvite from '../models/OrgInvite.js';
 import User from '../models/User.js';
+import { peopleIn } from './scope.js';
 import { randomToken, sha256 } from './tokens.js';
 
 // People who belong to departments: everyone but the owner and the hidden
@@ -14,16 +15,16 @@ export const CASE_INSENSITIVE = { locale: 'en', strength: 2 };
 const INVITE_DAYS = 14;
 
 // Makes sure every department someone already belongs to exists as a
-// Department, so the organisation starts from the people already here.
-// People with no department are put in the default one, which is where the
-// app already showed them.
+// Department, so the organisation starts from the people already here. It
+// never edits anyone's record: people with no department simply count as the
+// default one, which is where the app already shows them.
 export async function syncDepartments() {
-  await User.updateMany(
-    { ...memberFilter, $or: [{ department: { $exists: false } }, { department: '' }, { department: null }] },
-    { $set: { department: env.DEFAULT_DEPARTMENT } },
-  );
-
   const names = (await User.distinct('department', memberFilter)).filter(Boolean);
+  const hasDefault = await User.exists({
+    ...memberFilter,
+    $or: [{ department: { $exists: false } }, { department: '' }, { department: null }],
+  });
+  if (hasDefault) names.push(env.DEFAULT_DEPARTMENT);
   const existing = await Department.find({}).collation(CASE_INSENSITIVE).select('name');
   const known = new Set(existing.map((department) => department.name.toLowerCase()));
 
@@ -40,7 +41,7 @@ export async function syncDepartments() {
   // leave keeps going to the same person after the merge.
   const unrun = await Department.find({ admins: { $size: 0 }, manager: null });
   for (const department of unrun) {
-    const admin = await User.findOne({ ...memberFilter, role: 'admin', isActive: true, department: department.name })
+    const admin = await User.findOne({ ...memberFilter, role: 'admin', isActive: true, ...peopleIn([department.name]) })
       .collation(CASE_INSENSITIVE)
       .sort({ createdAt: 1 });
     if (admin) await Department.updateOne({ _id: department._id }, { $set: { admins: [admin._id] } });
@@ -129,7 +130,7 @@ export async function arrangeTree(department) {
   await User.updateMany(
     {
       ...memberFilter,
-      department: department.name,
+      ...peopleIn([department.name]),
       _id: { $nin: leaders },
       $or: [{ reportsTo: null }, { reportsTo: { $exists: false } }, { reportsTo: { $in: leaders } }],
     },

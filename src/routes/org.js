@@ -17,7 +17,8 @@ import {
   syncRoles,
 } from '../services/departments.js';
 import { sendMail } from '../services/mail.js';
-import { inviteMail, inviteUrl } from '../services/orgMail.js';
+import { approvedMail, inviteMail, inviteUrl } from '../services/orgMail.js';
+import { departmentOf, peopleIn } from '../services/scope.js';
 import { todayString } from '../utils/dates.js';
 import { badRequest, conflict, notFound } from '../utils/http.js';
 import { email, idParams, objectId, phone } from '../utils/schemas.js';
@@ -76,16 +77,21 @@ async function invite({ department, role, name: who, email: address, designation
 
 router.get('/', async (_req, res) => {
   await syncDepartments();
-  const [departments, members, invites, waiting] = await Promise.all([
+  const [departments, members, invites, waiting, managerRequests] = await Promise.all([
     Department.find({}).sort({ name: 1 }),
     activeMembers(),
     OrgInvite.find({ acceptedAt: { $exists: false }, expiresAt: { $gt: new Date() } }),
-    JoinRequest.aggregate([{ $match: { status: 'pending' } }, { $group: { _id: '$department', count: { $sum: 1 } } }]),
+    JoinRequest.aggregate([
+      { $match: { status: 'pending', kind: { $ne: 'manager' } } },
+      { $group: { _id: '$department', count: { $sum: 1 } } },
+    ]),
+    JoinRequest.find({ kind: 'manager', status: 'pending' }).sort({ createdAt: 1 }),
   ]);
   // An empty designation shows as the default one, as on the rest of the app.
   const people = members.map((person) => ({
     ...person.toJSON(),
     designation: person.designation || env.DEFAULT_DESIGNATION,
+    department: departmentOf(person),
   }));
   const byId = new Map(people.map((person) => [person.id, person]));
   const pendingInvite = (department, role) => {
@@ -107,7 +113,65 @@ router.get('/', async (_req, res) => {
       };
     }),
     people,
+    // Managers who registered with a new department, waiting for HR.
+    managerRequests,
   });
+});
+
+/* Managers who registered on their own */
+
+async function pendingManagerRequest(id) {
+  const request = await JoinRequest.findOne({ _id: id, kind: 'manager' }).select('+passwordHash');
+  if (!request) throw notFound('That request was not found.');
+  if (request.status !== 'pending') throw conflict(`This request is already ${request.status}.`);
+  return request;
+}
+
+// Approving sets up the department with them as its manager (an admin).
+// They then invite their assistant manager from My department.
+router.post('/manager-requests/:id/approve', validate({ params: idParams }), async (req, res) => {
+  const request = await pendingManagerRequest(req.valid.params.id);
+  if (await findByName(request.departmentName)) throw conflict(`There is already a department called ${request.departmentName}.`);
+  if (await User.exists({ $or: [{ email: request.email }, { employeeId: request.employeeId }] })) {
+    throw conflict('Someone with that email or employee ID already has an account.');
+  }
+
+  const user = await User.create({
+    name: request.name,
+    email: request.email,
+    employeeId: request.employeeId,
+    phone: request.phone || undefined,
+    designation: 'Manager',
+    department: request.departmentName,
+    role: 'admin',
+    passwordHash: request.passwordHash,
+  });
+  const department = await Department.create({
+    name: request.departmentName,
+    location: request.location || env.COMPANY_LOCATION,
+    managerName: request.name,
+    manager: user._id,
+  });
+  request.status = 'approved';
+  request.decidedBy = req.user._id;
+  request.decidedAt = new Date();
+  request.user = user._id;
+  request.department = department._id;
+  request.passwordHash = undefined;
+  await request.save();
+
+  res.json({ department, person: user });
+  sendMail({ to: [user.email], sender: req.user, ...approvedMail({ request, department, approver: req.user }) });
+});
+
+router.post('/manager-requests/:id/reject', validate({ params: idParams }), async (req, res) => {
+  const request = await pendingManagerRequest(req.valid.params.id);
+  request.status = 'rejected';
+  request.decidedBy = req.user._id;
+  request.decidedAt = new Date();
+  request.passwordHash = undefined;
+  await request.save();
+  res.status(204).end();
 });
 
 // The four steps of "Add department": its name, the manager (name, and an
@@ -224,7 +288,7 @@ router.patch(
 // Only an empty department can go, so nobody is left without one.
 router.delete('/departments/:id', validate({ params: idParams }), async (req, res) => {
   const department = await departmentOr404(req.valid.params.id);
-  const count = await User.countDocuments({ ...memberFilter, department: department.name }).collation(CASE_INSENSITIVE);
+  const count = await User.countDocuments({ ...memberFilter, ...peopleIn([department.name]) }).collation(CASE_INSENSITIVE);
   if (count > 0) {
     throw conflict(`${department.name} still has ${count} ${count === 1 ? 'employee' : 'employees'}. Move them first.`);
   }

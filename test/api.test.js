@@ -1226,3 +1226,59 @@ describe('leave inside the organisation', () => {
       .expect(403);
   });
 });
+
+describe('registering on your own', () => {
+  beforeEach(async () => {
+    await Department.init();
+    await Department.deleteMany({});
+  });
+
+  it('lets the first HR register, then a manager with HR approval, who invites the assistant manager', async () => {
+    assert.equal((await request(app).get('/api/join/setup').expect(200)).body.ownerExists, false);
+    const hrBody = { name: 'Neha HR', email: 'hr@example.com', password: 'hr-pass-12345' };
+    await request(app).post('/api/join/owner').send(hrBody).expect(201);
+    assert.equal((await User.findOne({ email: 'hr@example.com' })).role, 'owner');
+    // Only once: nobody else can make themselves HR.
+    await request(app)
+      .post('/api/join/owner')
+      .send({ name: 'Someone Else', email: 'else@example.com', password: 'else-pass-1234' })
+      .expect(409);
+    assert.equal((await request(app).get('/api/join/setup').expect(200)).body.ownerExists, true);
+
+    // A manager registers with a new department; no account until HR approves.
+    const manager = {
+      name: 'Ravi Kumar',
+      email: 'ravi@example.com',
+      employeeId: 'M-001',
+      department: 'Research',
+      password: 'ravi-pass-12345',
+    };
+    await request(app).post('/api/join/manager').send(manager).expect(201);
+    await request(app).post('/api/join/manager').send({ ...manager, email: 'r2@example.com', employeeId: 'M-002' }).expect(409);
+    await request(app).post('/api/auth/login').send({ email: manager.email, password: manager.password }).expect(401);
+
+    const hr = request.agent(app);
+    await hr.post('/api/auth/login').send({ email: hrBody.email, password: hrBody.password }).expect(200);
+    const waiting = (await hr.get('/api/org').expect(200)).body.managerRequests;
+    assert.equal(waiting.length, 1);
+    const approved = await hr.post(`/api/org/manager-requests/${waiting[0].id}/approve`).expect(200);
+    assert.equal(approved.body.department.name, 'Research');
+    assert.equal(approved.body.person.role, 'admin');
+
+    // The manager signs in, invites the assistant manager, who joins as admin.
+    const ravi = request.agent(app);
+    await ravi.post('/api/auth/login').send({ email: manager.email, password: manager.password }).expect(200);
+    const deptId = approved.body.department.id;
+    assert.equal((await ravi.get(`/api/departments/${deptId}`).expect(200)).body.you.canInviteAssistant, true);
+    const sent = await ravi
+      .post(`/api/departments/${deptId}/assistant-invite`)
+      .send({ name: 'Sita Das', email: 'sita@example.com' })
+      .expect(201);
+    const token = sent.body.invite.link.split('/join/invite/')[1];
+    await request(app).post(`/api/join/invite/${token}`).send({ name: 'Sita Das', employeeId: 'M-003', password: 'sita-pass-12345' }).expect(201);
+    const sita = await User.findOne({ email: 'sita@example.com' });
+    assert.equal(sita.role, 'admin');
+    assert.equal(String(sita.reportsTo), approved.body.person.id);
+    assert.equal(String((await Department.findById(deptId)).admins[0]), sita.id);
+  });
+});
