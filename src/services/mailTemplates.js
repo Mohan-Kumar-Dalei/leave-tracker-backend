@@ -57,7 +57,7 @@ function toText({ heading, intro, rows = [], action }) {
   return lines.join('\n');
 }
 
-function build(subject, content) {
+export function build(subject, content) {
   return { subject, html: layout(content), text: toText(content) };
 }
 

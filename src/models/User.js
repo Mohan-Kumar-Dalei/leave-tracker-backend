@@ -6,7 +6,9 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true, maxlength: 80 },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true, maxlength: 160 },
     employeeId: { type: String, required: true, unique: true, trim: true, uppercase: true, maxlength: 20 },
-    role: { type: String, enum: ['employee', 'admin'], default: 'employee', index: true },
+    // The owner (the company's HR or CEO) runs the organisation: departments
+    // and their admins. It is not part of any department's leave.
+    role: { type: String, enum: ['employee', 'admin', 'owner'], default: 'employee', index: true },
     department: { type: String, trim: true, maxlength: 60, default: '' },
     designation: { type: String, trim: true, maxlength: 80, default: '' },
     phone: { type: String, trim: true, maxlength: 20, default: '' },

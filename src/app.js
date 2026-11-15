@@ -6,7 +6,7 @@ import helmet from 'helmet';
 import mongoose from 'mongoose';
 import morgan from 'morgan';
 import env from './config/env.js';
-import { requireAdmin, requireAuth } from './middleware/auth.js';
+import { requireAdmin, requireAuth, requireOwner } from './middleware/auth.js';
 import { errorHandler, notFoundHandler } from './middleware/errors.js';
 import { apiLimiter, originCheck, sanitizeBody } from './middleware/security.js';
 import adminRoutes from './routes/admin.js';
@@ -15,6 +15,9 @@ import catalogRoutes from './routes/catalog.js';
 import leaveRoutes from './routes/leaves.js';
 import meRoutes from './routes/me.js';
 import notificationRoutes from './routes/notifications.js';
+import departmentRoutes from './routes/departments.js';
+import joinRoutes from './routes/join.js';
+import orgRoutes from './routes/org.js';
 import teamRoutes from './routes/team.js';
 
 export function createApp() {
@@ -74,6 +77,10 @@ export function createApp() {
   app.use('/api/notifications', requireAuth, notificationRoutes);
   app.use('/api/team', requireAuth, teamRoutes);
   app.use('/api/admin', requireAuth, requireAdmin, adminRoutes);
+  app.use('/api/org', requireAuth, requireOwner, orgRoutes);
+  app.use('/api/departments', requireAuth, departmentRoutes);
+  // Invitations and join links are opened before anyone has an account.
+  app.use('/api/join', joinRoutes);
   app.use('/api', requireAuth, catalogRoutes);
 
   app.use(notFoundHandler);

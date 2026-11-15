@@ -15,6 +15,7 @@ const { default: request } = await import('supertest');
 const { createApp } = await import('../src/app.js');
 const { connectDb } = await import('../src/config/db.js');
 const { default: BalanceAdjustment } = await import('../src/models/BalanceAdjustment.js');
+const { default: Department } = await import('../src/models/Department.js');
 const { default: Holiday } = await import('../src/models/Holiday.js');
 const { default: ImportedUsage } = await import('../src/models/ImportedUsage.js');
 const { default: Leave } = await import('../src/models/Leave.js');
@@ -999,5 +1000,145 @@ describe('team page', () => {
 
     // Nobody: back to the top of the department.
     await admin.patch(url(member)).send({ reportsTo: null }).expect(200);
+  });
+});
+
+describe('organisation', () => {
+
+  beforeEach(async () => {
+    await Department.init();
+    await Department.deleteMany({});
+  });
+
+  it('is for the owner only', async () => {
+    const employee = await signIn(await makeUser());
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    await employee.get('/api/org').expect(403);
+    await admin.get('/api/org').expect(403);
+    await request(app).get('/api/org').expect(401);
+  });
+
+  it('starts from the departments people are already in', async () => {
+    const owner = await signIn(await makeUser({ role: 'owner' }));
+    await makeUser({ department: 'Sales' });
+    await makeUser({ department: 'Sales' });
+    await makeUser({ department: '' });
+
+    const { body } = await owner.get('/api/org').expect(200);
+    const counts = Object.fromEntries(body.departments.map((d) => [d.name, d.people]));
+    assert.equal(counts.Sales, 2);
+    assert.equal(counts['Content Integration'], 1); // the default for people without one
+    assert.equal(body.people.length, 3); // the owner is not in a department
+  });
+
+  it('adds, renames and removes departments', async () => {
+    const owner = await signIn(await makeUser({ role: 'owner' }));
+    const { body } = await owner.post('/api/org/departments').send({ name: 'Sales', location: 'Delhi' }).expect(201);
+    await owner.post('/api/org/departments').send({ name: 'sales' }).expect(409);
+
+    const person = await makeUser({ department: 'Sales' });
+    await owner.patch(`/api/org/departments/${body.department.id}`).send({ name: 'Inside Sales' }).expect(200);
+    assert.equal((await User.findById(person.id)).department, 'Inside Sales');
+
+    await owner.delete(`/api/org/departments/${body.department.id}`).expect(409);
+    await User.updateOne({ _id: person.id }, { department: 'Elsewhere' });
+    await owner.delete(`/api/org/departments/${body.department.id}`).expect(204);
+  });
+
+  it('sets one department lead and moves employees between departments', async () => {
+    const owner = await signIn(await makeUser({ role: 'owner' }));
+    const lead = await makeUser({ department: 'Management' });
+    const sales = (await owner.post('/api/org/departments').send({ name: 'Sales' }).expect(201)).body.department;
+    await owner.patch(`/api/org/departments/${sales.id}`).send({ lead: lead.id }).expect(200);
+    const hr = (await owner.post('/api/org/departments').send({ name: 'HR' }).expect(201)).body.department;
+
+    let org = (await owner.get('/api/org').expect(200)).body;
+    assert.equal(org.departments.find((d) => d.name === 'Sales').lead.id, lead.id);
+
+    await owner.patch(`/api/org/departments/${sales.id}`).send({ lead: null }).expect(200);
+    await owner
+      .patch(`/api/org/departments/${sales.id}`)
+      .send({ lead: new mongoose.Types.ObjectId().toString() })
+      .expect(400);
+    org = (await owner.get('/api/org').expect(200)).body;
+    assert.equal(org.departments.find((d) => d.name === 'Sales').lead, null);
+
+    const seller = await makeUser({ department: 'Sales' });
+    await owner.patch(`/api/org/people/${seller.id}`).send({ department: hr.id }).expect(200);
+    assert.equal((await User.findById(seller.id)).department, 'HR');
+  });
+
+  it('adds an employee with the first-name@year starting password', async () => {
+    const owner = await signIn(await makeUser({ role: 'owner' }));
+    const sales = (await owner.post('/api/org/departments').send({ name: 'Sales' }).expect(201)).body.department;
+    const person = { name: 'Asha Rani Das', email: 'asha.das@example.com', employeeId: 'SAL-001', designation: 'Assistant Manager' };
+
+    const { body } = await owner.post('/api/org/people').send({ ...person, department: sales.id }).expect(201);
+    const year = new Date().getFullYear();
+    assert.equal(body.startingPassword, `Asha@${year}`);
+    assert.equal(body.person.department, 'Sales');
+    assert.equal(body.person.role, 'employee');
+
+    await request(app).post('/api/auth/login').send({ email: person.email, password: `Asha@${year}` }).expect(200);
+    await owner.post('/api/org/people').send({ ...person, employeeId: 'SAL-002', department: sales.id }).expect(409);
+
+    // They can now be the department lead.
+    await owner.patch(`/api/org/departments/${sales.id}`).send({ lead: body.person.id }).expect(200);
+  });
+
+  it('invites the assistant manager, who brings in and approves the team', async () => {
+    const owner = await signIn(await makeUser({ role: 'owner' }));
+    const created = await owner
+      .post('/api/org/departments')
+      .send({ name: '3PP', managerName: 'Ravi Kumar', assistantName: 'Sita Das', assistantEmail: 'sita@example.com' })
+      .expect(201);
+    const dept = created.body.department;
+    assert.equal(dept.managerName, 'Ravi Kumar');
+    assert.equal(created.body.invites.length, 1);
+    const inviteToken = created.body.invites[0].link.split('/join/invite/')[1];
+
+    // The assistant manager accepts the invitation and creates their account.
+    const invite = (await request(app).get(`/api/join/invite/${inviteToken}`).expect(200)).body;
+    assert.equal(invite.role, 'assistant');
+    assert.equal(invite.email, 'sita@example.com');
+    const sitaPassword = 'sita-pass-123';
+    await request(app)
+      .post(`/api/join/invite/${inviteToken}`)
+      .send({ name: 'Sita Das', employeeId: 'PP-001', password: sitaPassword })
+      .expect(201);
+    await request(app)
+      .post(`/api/join/invite/${inviteToken}`)
+      .send({ name: 'Sita Das', employeeId: 'PP-009', password: sitaPassword })
+      .expect(409);
+
+    const sita = request.agent(app);
+    await sita.post('/api/auth/login').send({ email: 'sita@example.com', password: sitaPassword }).expect(200);
+    const mine = (await sita.get('/api/departments/mine').expect(200)).body.items;
+    assert.deepEqual(mine.map((item) => item.name), ['3PP']);
+    const sitaId = String((await Department.findById(dept.id)).admins[0]);
+
+    // Someone opens the join link and asks to join.
+    const page = (await sita.get(`/api/departments/${dept.id}`).expect(200)).body;
+    const code = page.joinLink.split('/join/')[1];
+    assert.equal((await request(app).get(`/api/join/${code}`).expect(200)).body.department, '3PP');
+    const amit = { name: 'Amit Rout', email: 'amit@example.com', employeeId: 'PP-002', designation: 'Analyst', password: 'amit-pass-123' };
+    await request(app).post(`/api/join/${code}`).send(amit).expect(201);
+    await request(app).post(`/api/join/${code}`).send(amit).expect(409);
+    // Not an account until approved.
+    await request(app).post('/api/auth/login').send({ email: amit.email, password: amit.password }).expect(401);
+
+    // Someone outside the department cannot see or approve it.
+    const outsider = await signIn(await makeUser());
+    await outsider.get(`/api/departments/${dept.id}`).expect(403);
+
+    const waiting = (await sita.get(`/api/departments/${dept.id}`).expect(200)).body.requests;
+    assert.equal(waiting.length, 1);
+    const approved = await sita.post(`/api/departments/${dept.id}/requests/${waiting[0].id}/approve`).expect(200);
+    await request(app).post('/api/auth/login').send({ email: amit.email, password: amit.password }).expect(200);
+
+    // The team reports to the assistant manager, as in Content Integration.
+    assert.equal(String((await User.findById(approved.body.person.id)).reportsTo), sitaId);
+    // Only the owner (or a manager with an account) changes the assistant manager.
+    await sita.put(`/api/departments/${dept.id}/assistant`).send({ user: approved.body.person.id }).expect(403);
   });
 });

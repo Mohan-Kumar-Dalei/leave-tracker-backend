@@ -28,3 +28,8 @@ export function requireAdmin(req, _res, next) {
   if (req.user?.role !== 'admin') return next(forbidden());
   return next();
 }
+
+export function requireOwner(req, _res, next) {
+  if (req.user?.role !== 'owner') return next(forbidden());
+  return next();
+}
