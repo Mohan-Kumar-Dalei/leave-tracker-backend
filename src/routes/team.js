@@ -18,7 +18,9 @@ router.get('/', async (req, res) => {
   const day = parseDay(today);
 
   const [people, onLeave] = await Promise.all([
-    User.find({ isActive: true, ...notHidden }).select('name employeeId email phone designation department role avatarUrl').sort({ name: 1 }),
+    User.find({ isActive: true, ...notHidden })
+      .select('name employeeId email phone designation department role avatarUrl reportsTo workFromHome')
+      .sort({ name: 1 }),
     Leave.find({ status: 'approved', from: { $lte: day }, to: { $gte: day } }).populate('leaveType', 'name code'),
   ]);
 
@@ -46,8 +48,15 @@ router.get('/', async (req, res) => {
     designation: person.designation || (person.role === 'admin' ? 'Admin' : env.DEFAULT_DESIGNATION),
     department: person.department || env.DEFAULT_DEPARTMENT,
     location: env.COMPANY_LOCATION,
+    reportsTo: person.reportsTo ? String(person.reportsTo) : null,
+    workFromHome: person.workFromHome,
     leave: leaveOf.get(person.id) ?? null,
   }));
+
+  // Someone who reports to a person not in the list (inactive or hidden) is
+  // shown at the top of their department instead of disappearing.
+  const ids = new Set(members.map((member) => member.id));
+  for (const member of members) if (member.reportsTo && !ids.has(member.reportsTo)) member.reportsTo = null;
 
   res.json({
     today,

@@ -21,6 +21,10 @@ const userSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true, index: true },
     // A test account: it works, but is left out of every list others see.
     hidden: { type: Boolean, default: false, index: true },
+    // Who this person reports to, for the department tree and "Reporting to".
+    reportsTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Works from home, shown as a tag in the department tree.
+    workFromHome: { type: Boolean, default: false },
 
     passwordHash: { type: String, select: false },
     tokenVersion: { type: Number, default: 0, select: false },

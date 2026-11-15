@@ -20,6 +20,7 @@ import { revokeAllSessions } from '../services/tokens.js';
 import { addDays, monthRange, parseDay, toDayString, todayString, yearRange } from '../utils/dates.js';
 import {
   ApiError,
+  badRequest,
   conflict,
   escapeRegex,
   forbidden,
@@ -327,7 +328,24 @@ const employeeBody = {
   phone: phone.optional(),
   joinedOn: day.optional(),
   isActive: z.boolean().optional(),
+  // Who they report to (null for nobody), and whether they work from home.
+  reportsTo: objectId.nullable().optional(),
+  workFromHome: z.boolean().optional(),
 };
+
+// A manager must exist, and the chain must not loop back to the person.
+async function assertReportsTo(personId, managerId) {
+  if (!managerId) return;
+  if (String(managerId) === String(personId)) throw badRequest('Someone cannot report to themselves.');
+  let current = await User.findById(managerId).select('reportsTo');
+  if (!current) throw badRequest('That manager was not found.');
+  for (let step = 0; current && step < 50; step += 1) {
+    if (String(current.reportsTo ?? '') === String(personId)) {
+      throw badRequest('That would make a loop: the manager already reports to this person.');
+    }
+    current = current.reportsTo ? await User.findById(current.reportsTo).select('reportsTo') : null;
+  }
+}
 
 router.get(
   '/employees',
@@ -417,6 +435,7 @@ router.patch(
     const { joinedOn, ...rest } = req.valid.body;
     const target = await User.findById(req.valid.params.id);
     if (!target) throw notFound('That employee was not found.');
+    if (rest.reportsTo !== undefined) await assertReportsTo(target.id, rest.reportsTo);
 
     const losingAdmin =
       target.role === 'admin' && (rest.role === 'employee' || rest.isActive === false);

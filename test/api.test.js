@@ -953,4 +953,31 @@ describe('team page', () => {
 
     await request(app).get('/api/team').expect(401);
   });
+
+  it('keeps who reports to whom, set by an admin, without loops', async () => {
+    const boss = await makeUser({ name: 'Tree Boss', role: 'admin' });
+    const lead = await makeUser({ name: 'Tree Lead' });
+    const member = await makeUser({ name: 'Tree Member' });
+    const admin = await signIn(boss);
+    const url = (person) => `/api/admin/employees/${person.id}`;
+
+    await admin.patch(url(lead)).send({ reportsTo: boss.id }).expect(200);
+    await admin.patch(url(member)).send({ reportsTo: lead.id, workFromHome: true }).expect(200);
+    const self = await admin.patch(url(member)).send({ reportsTo: member.id }).expect(400);
+    assert.match(self.body.message, /themselves/);
+    const loop = await admin.patch(url(boss)).send({ reportsTo: member.id }).expect(400);
+    assert.match(loop.body.message, /loop/);
+
+    const employee = await signIn(member);
+    await employee.patch(url(member)).send({ reportsTo: boss.id }).expect(403);
+    const { body } = await employee.get('/api/team').expect(200);
+    const byName = Object.fromEntries(body.members.map((m) => [m.name, m]));
+    assert.equal(byName['Tree Member'].reportsTo, lead.id);
+    assert.equal(byName['Tree Member'].workFromHome, true);
+    assert.equal(byName['Tree Lead'].reportsTo, boss.id);
+    assert.equal(byName['Tree Boss'].reportsTo, null);
+
+    // Nobody: back to the top of the department.
+    await admin.patch(url(member)).send({ reportsTo: null }).expect(200);
+  });
 });
