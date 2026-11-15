@@ -1071,7 +1071,7 @@ describe('organisation', () => {
   it('adds an employee with the first-name@year starting password', async () => {
     const owner = await signIn(await makeUser({ role: 'owner' }));
     const sales = (await owner.post('/api/org/departments').send({ name: 'Sales' }).expect(201)).body.department;
-    const person = { name: 'Asha Rani Das', email: 'asha.das@example.com', employeeId: 'SAL-001', designation: 'Assistant Manager' };
+    const person = { name: 'Asha Rani Das', email: 'asha.das@example.com', designation: 'Assistant Manager' };
 
     const { body } = await owner.post('/api/org/people').send({ ...person, department: sales.id }).expect(201);
     const year = new Date().getFullYear();
@@ -1080,7 +1080,7 @@ describe('organisation', () => {
     assert.equal(body.person.role, 'employee');
 
     await request(app).post('/api/auth/login').send({ email: person.email, password: `Asha@${year}` }).expect(200);
-    await owner.post('/api/org/people').send({ ...person, employeeId: 'SAL-002', department: sales.id }).expect(409);
+    await owner.post('/api/org/people').send({ ...person, department: sales.id }).expect(409);
 
     // They can now be the department lead.
     await owner.patch(`/api/org/departments/${sales.id}`).send({ lead: body.person.id }).expect(200);
@@ -1104,11 +1104,11 @@ describe('organisation', () => {
     const sitaPassword = 'sita-pass-123';
     await request(app)
       .post(`/api/join/invite/${inviteToken}`)
-      .send({ name: 'Sita Das', employeeId: 'PP-001', password: sitaPassword })
+      .send({ name: 'Sita Das', password: sitaPassword })
       .expect(201);
     await request(app)
       .post(`/api/join/invite/${inviteToken}`)
-      .send({ name: 'Sita Das', employeeId: 'PP-009', password: sitaPassword })
+      .send({ name: 'Sita Das', password: sitaPassword })
       .expect(409);
 
     const sita = request.agent(app);
@@ -1121,7 +1121,7 @@ describe('organisation', () => {
     const page = (await sita.get(`/api/departments/${dept.id}`).expect(200)).body;
     const code = page.joinLink.split('/join/')[1];
     assert.equal((await request(app).get(`/api/join/${code}`).expect(200)).body.department, '3PP');
-    const amit = { name: 'Amit Rout', email: 'amit@example.com', employeeId: 'PP-002', designation: 'Analyst', password: 'amit-pass-123' };
+    const amit = { name: 'Amit Rout', email: 'amit@example.com', designation: 'Analyst', password: 'amit-pass-123' };
     await request(app).post(`/api/join/${code}`).send(amit).expect(201);
     await request(app).post(`/api/join/${code}`).send(amit).expect(409);
     // Not an account until approved.
@@ -1152,7 +1152,7 @@ describe('leave inside the organisation', () => {
   async function acceptInvite(link, employeeId, password) {
     const token = link.split('/join/invite/')[1];
     const { body } = await request(app).get(`/api/join/invite/${token}`).expect(200);
-    await request(app).post(`/api/join/invite/${token}`).send({ name: body.name, employeeId, password }).expect(201);
+    await request(app).post(`/api/join/invite/${token}`).send({ name: body.name, password }).expect(201);
     const agent = request.agent(app);
     await agent.post('/api/auth/login').send({ email: body.email, password }).expect(200);
     return agent;
@@ -1182,7 +1182,7 @@ describe('leave inside the organisation', () => {
 
     const added = await hr
       .post('/api/org/people')
-      .send({ name: 'Amit Rout', email: 'amit@example.com', employeeId: 'S-003', department: created.body.department.id })
+      .send({ name: 'Amit Rout', email: 'amit@example.com', department: created.body.department.id })
       .expect(201);
     const amit = request.agent(app);
     await amit.post('/api/auth/login').send({ email: 'amit@example.com', password: added.body.startingPassword }).expect(200);
@@ -1200,6 +1200,12 @@ describe('leave inside the organisation', () => {
     assert.deepEqual(await pendingFor(sita), [amitLeave.id]);
     assert.deepEqual(await pendingFor(oldAdmin), []);
     assert.deepEqual(await pendingFor(hr), [amitLeave.id]);
+    // HR sees where it came from and who it went to, and can pick the department.
+    const hrView = (await hr.get('/api/admin/leaves?status=pending&department=Sales').expect(200)).body;
+    assert.equal(hrView.items[0].department, 'Sales');
+    assert.deepEqual(hrView.items[0].reportedTo, ['Sita Das']);
+    assert.ok(hrView.departments.includes('Sales'));
+    assert.equal((await hr.get('/api/admin/leaves?status=pending&department=Other').expect(200)).body.items.length, 0);
     await oldAdmin.patch(`/api/admin/leaves/${amitLeave.id}/review`).send({ decision: 'approved' }).expect(404);
     await sita.patch(`/api/admin/leaves/${amitLeave.id}/review`).send({ decision: 'approved' }).expect(200);
 
@@ -1222,7 +1228,7 @@ describe('leave inside the organisation', () => {
     // Only HR decides who is an admin.
     await sita
       .post('/api/admin/employees')
-      .send({ name: 'New One', email: 'new.one@example.com', employeeId: 'S-009', role: 'admin', password: 'new-pass-1234' })
+      .send({ name: 'New One', email: 'new.one@example.com', role: 'admin', password: 'new-pass-1234' })
       .expect(403);
   });
 });
@@ -1249,12 +1255,11 @@ describe('registering on your own', () => {
     const manager = {
       name: 'Ravi Kumar',
       email: 'ravi@example.com',
-      employeeId: 'M-001',
       department: 'Research',
       password: 'ravi-pass-12345',
     };
     await request(app).post('/api/join/manager').send(manager).expect(201);
-    await request(app).post('/api/join/manager').send({ ...manager, email: 'r2@example.com', employeeId: 'M-002' }).expect(409);
+    await request(app).post('/api/join/manager').send({ ...manager, email: 'r2@example.com' }).expect(409);
     await request(app).post('/api/auth/login').send({ email: manager.email, password: manager.password }).expect(401);
 
     const hr = request.agent(app);
@@ -1275,10 +1280,29 @@ describe('registering on your own', () => {
       .send({ name: 'Sita Das', email: 'sita@example.com' })
       .expect(201);
     const token = sent.body.invite.link.split('/join/invite/')[1];
-    await request(app).post(`/api/join/invite/${token}`).send({ name: 'Sita Das', employeeId: 'M-003', password: 'sita-pass-12345' }).expect(201);
+    await request(app).post(`/api/join/invite/${token}`).send({ name: 'Sita Das', password: 'sita-pass-12345' }).expect(201);
     const sita = await User.findOne({ email: 'sita@example.com' });
     assert.equal(sita.role, 'admin');
     assert.equal(String(sita.reportsTo), approved.body.person.id);
     assert.equal(String((await Department.findById(deptId)).admins[0]), sita.id);
+  });
+});
+
+describe('employee IDs', () => {
+  beforeEach(async () => {
+    await Department.init();
+    await Department.deleteMany({});
+  });
+
+  it('gives each new person the next number in the CON series', async () => {
+    await makeUser({ employeeId: 'CON-001' });
+    await makeUser({ employeeId: 'CON-030' });
+    const owner = await signIn(await makeUser({ role: 'owner' }));
+    const dept = (await owner.post('/api/org/departments').send({ name: 'Research' }).expect(201)).body.department;
+
+    const first = await owner.post('/api/org/people').send({ name: 'Asha Das', email: 'asha@example.com', department: dept.id }).expect(201);
+    assert.equal(first.body.person.employeeId, 'CON-031');
+    const second = await owner.post('/api/org/people').send({ name: 'Bina Roy', email: 'bina@example.com', department: dept.id }).expect(201);
+    assert.equal(second.body.person.employeeId, 'CON-032');
   });
 });

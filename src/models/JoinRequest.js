@@ -16,7 +16,8 @@ const joinRequestSchema = new mongoose.Schema(
     location: { type: String, trim: true, maxlength: 60, default: '' },
     name: { type: String, required: true, trim: true, maxlength: 80 },
     email: { type: String, required: true, lowercase: true, trim: true, maxlength: 160 },
-    employeeId: { type: String, required: true, trim: true, uppercase: true, maxlength: 20 },
+    // Given on approval (the next CON number); older requests may carry one.
+    employeeId: { type: String, trim: true, uppercase: true, maxlength: 20, default: '' },
     phone: { type: String, trim: true, maxlength: 20, default: '' },
     designation: { type: String, trim: true, maxlength: 80, default: '' },
     // Cleared once the request is decided: the account has it, or nobody needs it.

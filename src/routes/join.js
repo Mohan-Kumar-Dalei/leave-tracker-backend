@@ -8,6 +8,7 @@ import Department from '../models/Department.js';
 import JoinRequest from '../models/JoinRequest.js';
 import User from '../models/User.js';
 import { arrangeTree, findInvite, syncRoles } from '../services/departments.js';
+import { createWithNextId, nextEmployeeId } from '../services/employeeIds.js';
 import { notifyUsers } from '../services/notify.js';
 import { badRequest, conflict, notFound } from '../utils/http.js';
 import { email, password, phone } from '../utils/schemas.js';
@@ -26,12 +27,6 @@ const ROLE_NAME = { manager: 'Manager', assistant: 'Assistant Manager' };
 
 const token = z.strictObject({ token: z.string().min(20).max(200) });
 const code = z.strictObject({ code: z.string().min(8).max(40).regex(/^[A-Za-z0-9_-]+$/) });
-const employeeId = z
-  .string()
-  .trim()
-  .min(2, 'Write your employee ID')
-  .max(20)
-  .regex(/^[A-Za-z0-9-]+$/, 'Use letters, numbers and hyphens');
 const name = z.string().trim().min(2, 'Write your full name').max(80);
 
 async function openInvite(value) {
@@ -44,12 +39,12 @@ async function openInvite(value) {
   return { invite, department };
 }
 
-async function assertFree({ email: address, employeeId: id }) {
-  const upper = id.toUpperCase();
+// Employee IDs are given automatically (the next CON number), so only the
+// email has to be new.
+async function assertFree({ email: address }) {
   if (await User.exists({ email: address })) throw conflict('That email already has an account. Sign in instead.');
-  if (await User.exists({ employeeId: upper })) throw conflict('That employee ID is already taken.');
-  if (await JoinRequest.exists({ status: 'pending', $or: [{ email: address }, { employeeId: upper }] })) {
-    throw conflict('A request with that email or employee ID is already waiting for approval.');
+  if (await JoinRequest.exists({ status: 'pending', email: address })) {
+    throw conflict('A request with that email is already waiting for approval.');
   }
 }
 
@@ -61,6 +56,11 @@ const findName = (value) => Department.findOne({ name: value }).collation({ loca
 // HR yet; after that, HR invites people and managers ask HR to approve them.
 router.get('/setup', async (_req, res) => {
   res.json({ company: env.COMPANY_NAME, location: env.COMPANY_LOCATION, ownerExists: Boolean(await User.exists({ role: 'owner' })) });
+});
+
+// The employee ID the next new person gets (forms show it, read-only).
+router.get('/next-id', async (_req, res) => {
+  res.json({ employeeId: await nextEmployeeId() });
 });
 
 // The company's first HR (the owner) registers. Closed once there is one, so
@@ -75,11 +75,10 @@ router.post(
     }
     const body = req.valid.body;
     if (await User.exists({ email: body.email })) throw conflict('That email already has an account. Sign in instead.');
-    const user = await User.create({
+    const user = await createWithNextId({
       name: body.name,
       email: body.email,
       phone: body.phone,
-      employeeId: `HR-${Date.now().toString(36).toUpperCase()}`,
       designation: 'HR',
       department: '',
       role: 'owner',
@@ -98,7 +97,6 @@ router.post(
     body: z.strictObject({
       name,
       email,
-      employeeId,
       phone: phone.optional(),
       department: z.string().trim().min(2, 'Write the department name').max(60),
       location: z.string().trim().max(60).optional(),
@@ -126,7 +124,6 @@ router.post(
       location: body.location ?? env.COMPANY_LOCATION,
       name: body.name,
       email: body.email,
-      employeeId: body.employeeId,
       phone: body.phone ?? '',
       designation: 'Manager',
       passwordHash: await bcrypt.hash(body.password, BCRYPT_COST),
@@ -161,16 +158,15 @@ router.get('/invite/:token', validate({ params: token }), async (req, res) => {
 router.post(
   '/invite/:token',
   authLimiter,
-  validate({ params: token, body: z.strictObject({ name, employeeId, phone: phone.optional(), password }) }),
+  validate({ params: token, body: z.strictObject({ name, phone: phone.optional(), password }) }),
   async (req, res) => {
     const { invite, department } = await openInvite(req.valid.params.token);
     const body = req.valid.body;
-    await assertFree({ email: invite.email, employeeId: body.employeeId });
+    await assertFree({ email: invite.email });
 
-    const user = await User.create({
+    const user = await createWithNextId({
       name: body.name,
       email: invite.email,
-      employeeId: body.employeeId,
       phone: body.phone,
       designation: invite.designation || ROLE_NAME[invite.role],
       department: department.name,
@@ -208,7 +204,6 @@ router.post(
     body: z.strictObject({
       name,
       email,
-      employeeId,
       phone: phone.optional(),
       designation: z.string().trim().max(80).optional(),
       password,
@@ -225,7 +220,6 @@ router.post(
       department: department._id,
       name: body.name,
       email: body.email,
-      employeeId: body.employeeId,
       phone: body.phone ?? '',
       designation: body.designation ?? '',
       passwordHash: await bcrypt.hash(body.password, BCRYPT_COST),

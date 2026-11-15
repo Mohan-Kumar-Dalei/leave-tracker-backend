@@ -17,6 +17,7 @@ import {
   reportsToFor,
   syncRoles,
 } from '../services/departments.js';
+import { createWithNextId } from '../services/employeeIds.js';
 import { sendMail } from '../services/mail.js';
 import { notifyUsers } from '../services/notify.js';
 import { approvedMail, inviteMail, inviteUrl, joinLinkMail, joinUrl } from '../services/orgMail.js';
@@ -143,14 +144,12 @@ async function pendingRequest(department, requestId) {
 router.post('/:id/requests/:requestId/approve', validate({ params: requestParams }), async (req, res) => {
   const department = await managed(req, req.valid.params.id);
   const request = await pendingRequest(department, req.valid.params.requestId);
-  if (await User.exists({ $or: [{ email: request.email }, { employeeId: request.employeeId }] })) {
-    throw conflict('Someone with that email or employee ID already has an account.');
-  }
+  if (await User.exists({ email: request.email })) throw conflict('Someone with that email already has an account.');
 
-  const user = await User.create({
+  // They get the next employee ID in the company's CON series.
+  const user = await createWithNextId({
     name: request.name,
     email: request.email,
-    employeeId: request.employeeId,
     phone: request.phone || undefined,
     designation: request.designation,
     department: department.name,

@@ -19,12 +19,14 @@ import {
   getMonthlyUsage,
 } from '../services/balances.js';
 import { assessLeave } from '../services/leaves.js';
+import { createWithNextId } from '../services/employeeIds.js';
 import { sendMail } from '../services/mail.js';
 import { decisionMail, letterCore } from '../services/leaveMail.js';
 import { range } from '../services/mailTemplates.js';
 import { notHidden } from '../services/hidden.js';
 import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
-import { canReview, inScope, leaveOwnersIn, peopleIn, reviewersFor, scopeOf } from '../services/scope.js';
+import { canReview, departmentOf, inScope, leaveOwnersIn, peopleIn, reviewersFor, scopeOf } from '../services/scope.js';
+import Department from '../models/Department.js';
 import { revokeAllSessions } from '../services/tokens.js';
 import { addDays, monthRange, parseDay, toDayString, todayString, yearRange } from '../utils/dates.js';
 import {
@@ -139,7 +141,7 @@ router.get('/overview', async (req, res) => {
   res.json({
     today: todayValue,
     pendingCount,
-    pending: pendingItems,
+    pending: await withRouting(pendingItems),
     awayToday,
     nextUp,
     employees,
@@ -202,11 +204,48 @@ const leaveQuery = z.object({
   from: day.optional(),
   to: day.optional(),
   q: z.string().trim().max(80).optional(),
+  // One department, within the ones this person runs.
+  department: z.string().trim().max(60).optional(),
   page: page.optional(),
   limit: limit.optional(),
 });
 
-async function buildLeaveFilter({ status, user, leaveType, from, to, q }, scope) {
+const sameDepartment = (a = '', b = '') => a.localeCompare(b, 'en', { sensitivity: 'accent' }) === 0;
+
+// The departments to show: one picked department narrows the person's scope.
+function narrowScope(scope, department) {
+  if (!department) return scope;
+  if (!scope) return [department];
+  const picked = scope.filter((name) => sameDepartment(name, department));
+  return picked.length ? picked : ['\u0000none'];
+}
+
+// Where each request came from and who it went to, so HR and managers can see
+// "Demo Team, to Sita Das" at a glance. Worked out once per person.
+async function withRouting(leaves) {
+  const routes = new Map();
+  return Promise.all(
+    leaves.map(async (leave) => {
+      const person = leave.user;
+      const key = String(person?._id ?? '');
+      if (person && !routes.has(key)) routes.set(key, reviewersFor(person).then((list) => list.map((one) => one.name)));
+      return {
+        ...leave.toJSON(),
+        department: person ? departmentOf(person) : '',
+        reportedTo: person ? await routes.get(key) : [],
+      };
+    }),
+  );
+}
+
+// The department names someone can filter by: all for HR, theirs otherwise.
+async function departmentChoices(scope) {
+  if (scope) return scope;
+  return (await Department.find({}).sort({ name: 1 }).select('name')).map((department) => department.name);
+}
+
+async function buildLeaveFilter({ status, user, leaveType, from, to, q, department }, baseScope) {
+  const scope = narrowScope(baseScope, department);
   const filter = { user: await leaveOwnersIn(scope) };
   if (status) filter.status = status;
   if (user) filter.user = { ...filter.user, $eq: user };
@@ -239,7 +278,11 @@ router.get('/leaves', validate({ query: leaveQuery }), async (req, res) => {
     Leave.countDocuments(filter),
   ]);
 
-  res.json({ items, ...pageMeta(total, pageInfo) });
+  res.json({
+    items: await withRouting(items),
+    departments: await departmentChoices(req.scope),
+    ...pageMeta(total, pageInfo),
+  });
 });
 
 router.get('/leaves.csv', validate({ query: leaveQuery }), async (req, res) => {
@@ -385,7 +428,8 @@ router.patch(
 const employeeBody = {
   name: z.string().trim().min(2).max(80),
   email,
-  employeeId: z.string().trim().min(2).max(20).regex(/^[A-Za-z0-9-]+$/, 'Use letters, numbers and hyphens'),
+  // Left out when adding someone: they get the next number in the CON series.
+  employeeId: z.string().trim().min(2).max(20).regex(/^[A-Za-z0-9-]+$/, 'Use letters, numbers and hyphens').optional(),
   role: z.enum(['employee', 'admin']).optional(),
   department: z.string().trim().max(60).optional(),
   designation: z.string().trim().max(80).optional(),
@@ -460,11 +504,12 @@ router.post(
     // A department admin adds people to their own department.
     if (req.scope && !(await inScope(req.scope, rest))) rest.department = req.scope[0];
 
-    const user = await User.create({
+    const fields = {
       ...rest,
       joinedOn: joinedOn ? parseDay(joinedOn) : undefined,
       passwordHash: await bcrypt.hash(chosenPassword, BCRYPT_COST),
-    });
+    };
+    const user = rest.employeeId ? await User.create(fields) : await createWithNextId(fields);
 
     res.status(201).json({ user });
   },

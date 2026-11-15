@@ -16,6 +16,7 @@ import {
   syncDepartments,
   syncRoles,
 } from '../services/departments.js';
+import { createWithNextId } from '../services/employeeIds.js';
 import { sendMail } from '../services/mail.js';
 import { approvedMail, inviteMail, inviteUrl } from '../services/orgMail.js';
 import { departmentOf, peopleIn } from '../services/scope.js';
@@ -132,14 +133,11 @@ async function pendingManagerRequest(id) {
 router.post('/manager-requests/:id/approve', validate({ params: idParams }), async (req, res) => {
   const request = await pendingManagerRequest(req.valid.params.id);
   if (await findByName(request.departmentName)) throw conflict(`There is already a department called ${request.departmentName}.`);
-  if (await User.exists({ $or: [{ email: request.email }, { employeeId: request.employeeId }] })) {
-    throw conflict('Someone with that email or employee ID already has an account.');
-  }
+  if (await User.exists({ email: request.email })) throw conflict('Someone with that email already has an account.');
 
-  const user = await User.create({
+  const user = await createWithNextId({
     name: request.name,
     email: request.email,
-    employeeId: request.employeeId,
     phone: request.phone || undefined,
     designation: 'Manager',
     department: request.departmentName,
@@ -300,12 +298,12 @@ router.delete('/departments/:id', validate({ params: idParams }), async (req, re
   res.status(204).end();
 });
 
-// Adds an employee straight away (for one or two people). The starting
-// password follows the company's rule, first name @ year (e.g. Asha@2026).
+// Adds an employee straight away (for one or two people). They get the next
+// employee ID in the CON series, and the starting password follows the
+// company's rule, first name @ year (e.g. Asha@2026).
 const newPerson = z.strictObject({
   name,
   email,
-  employeeId: z.string().trim().min(2).max(20).regex(/^[A-Za-z0-9-]+$/, 'Use letters, numbers and hyphens'),
   designation: z.string().trim().max(80).optional(),
   phone: phone.optional(),
   department: objectId,
@@ -314,14 +312,11 @@ const newPerson = z.strictObject({
 router.post('/people', validate({ body: newPerson }), async (req, res) => {
   const { department: departmentId, ...fields } = req.valid.body;
   const department = await departmentOr404(departmentId);
-  const clash = await User.findOne({ $or: [{ email: fields.email }, { employeeId: fields.employeeId.toUpperCase() }] });
-  if (clash) {
-    throw conflict(clash.email === fields.email ? 'Someone already uses that email.' : 'That employee ID is taken.');
-  }
+  if (await User.exists({ email: fields.email })) throw conflict('Someone already uses that email.');
 
   const year = todayString(env.TIMEZONE).slice(0, 4);
   const startingPassword = `${fields.name.split(/\s+/)[0]}@${year}`;
-  const person = await User.create({
+  const person = await createWithNextId({
     ...fields,
     department: department.name,
     role: 'employee',
