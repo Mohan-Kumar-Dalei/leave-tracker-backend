@@ -10,7 +10,7 @@ import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
 import { BALANCE_HEADERS, balanceCells, getBalances, getMonthlyUsage } from '../services/balances.js';
 import { mailContacts } from '../services/contacts.js';
-import { departmentOf, reviewersFor } from '../services/scope.js';
+import { departmentOf, leaveOwnersIn, reviewersFor } from '../services/scope.js';
 import {
   appPasswordAvailable,
   checkAppPassword,
@@ -75,7 +75,10 @@ router.get(
     const { start, end } = yearRange(selectedYear);
     const today = todayString(env.TIMEZONE);
 
-    const [balances, leaves, holidays, monthly, adjustments] = await Promise.all([
+    // Leave of the others in the department, as on the team calendar: who and
+    // when, never the reason or the leave type.
+    const colleagues = await leaveOwnersIn([departmentOf(req.user)]);
+    const [balances, leaves, holidays, monthly, adjustments, teamLeaves] = await Promise.all([
       getBalances(req.user.id, selectedYear),
       Leave.find({ user: req.user.id, year: selectedYear, status: { $in: ACTIVE_STATUSES } })
         .populate('leaveType', typeFields)
@@ -86,6 +89,13 @@ router.get(
         .populate('leaveType', 'name')
         .populate('createdBy', 'name')
         .sort({ updatedAt: -1 }),
+      Leave.find({
+        user: { ...colleagues, $ne: req.user._id },
+        year: selectedYear,
+        status: { $in: ['pending', 'approved'] },
+      })
+        .populate('user', 'name')
+        .sort({ from: 1 }),
     ]);
 
     const rhBalance = balances.find((balance) => balance.leaveType.restrictedHolidayOnly);
@@ -93,6 +103,19 @@ router.get(
 
     const entries = [
       ...leaves.map(leaveEntry),
+      ...teamLeaves.map((leave) => {
+        const { id, from, to, days, status } = leave.toJSON();
+        return {
+          kind: 'team',
+          id,
+          from,
+          to,
+          days,
+          status,
+          title: leave.user?.name ?? 'Someone',
+          detail: `${days} ${days === 1 ? 'day' : 'days'}`,
+        };
+      }),
       ...holidays.map((holiday) => holidayEntry(holiday, availedIds, rhBalance?.available ?? 0)),
     ];
 

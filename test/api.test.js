@@ -1306,3 +1306,21 @@ describe('employee IDs', () => {
     assert.equal(second.body.person.employeeId, 'CON-032');
   });
 });
+
+describe('the department on the dashboard', () => {
+  it("shows colleagues' leave (who and when, not why) and only from the same department", async () => {
+    const me = await signIn(await makeUser({ department: 'Sales' }));
+    const colleague = await makeUser({ name: 'Colleague One', department: 'Sales' });
+    const outsider = await makeUser({ name: 'Other Dept', department: 'HR' });
+    await makeUser({ role: 'admin', department: 'Sales' });
+    await makeUser({ role: 'admin', department: 'HR' });
+    await apply(await signIn(colleague), { from: '2031-03-03', to: '2031-03-03', reason: 'Private reason' }).expect(201);
+    await apply(await signIn(outsider), { from: '2031-03-04', to: '2031-03-04' }).expect(201);
+
+    const { body } = await me.get('/api/me/summary?year=2031').expect(200);
+    const team = [...body.upcoming, ...body.past].filter((entry) => entry.kind === 'team');
+    assert.deepEqual(team.map((entry) => entry.title), ['Colleague One']);
+    assert.equal(team[0].status, 'pending');
+    assert.ok(!JSON.stringify(team).includes('Private reason'));
+  });
+});
