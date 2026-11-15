@@ -757,6 +757,21 @@ describe('leave mail text and CC', () => {
     assert.equal(reviewed.leave.reviewNote, 'Not this week, the release is on.');
   });
 
+  it('accepts Reply all, which quotes the employee mail under the reply', async () => {
+    const employee = await signIn(await makeUser());
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    const { body } = await apply(employee, { from: '2031-04-22', to: '2031-04-22' }).expect(201);
+    await admin
+      .patch(`/api/admin/leaves/${body.leave.id}/review`)
+      .send({ decision: 'approved', reply: 'Hi there,\n\nApproved.\n\nThanks', quoteOriginal: 'yes' })
+      .expect(400);
+    const { body: reviewed } = await admin
+      .patch(`/api/admin/leaves/${body.leave.id}/review`)
+      .send({ decision: 'approved', reply: 'Hi there,\n\nApproved.\n\nThanks', quoteOriginal: true })
+      .expect(200);
+    assert.equal(reviewed.leave.status, 'approved');
+  });
+
   it('tells the compose box who the mail goes to and the signature', async () => {
     await makeUser({ role: 'admin', name: 'Compose Admin' });
     const agent = await signIn(await makeUser({ phone: '+91 90000 11111' }));

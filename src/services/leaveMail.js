@@ -171,24 +171,72 @@ function signatureText(person) {
 
 /* Body */
 
-// Typed text keeps its paragraphs and line breaks, and is escaped for HTML.
-function compose(text, person) {
-  const paragraphs = text
+const paragraphsOf = (text) =>
+  text
     .replace(/\r\n/g, '\n')
     .split(/\n\s*\n/)
     .map((part) => part.trim())
     .filter(Boolean);
 
+// One message: its paragraphs, then the sender's signature.
+function messageHtml(text, person) {
+  return `${paragraphsOf(text)
+    .map((part) => `<p style="margin:0 0 14px">${escapeHtml(part).replace(/\n/g, '<br>')}</p>`)
+    .join('\n')}
+<p style="margin:18px 0 8px;color:#5f6368">--</p>
+${signatureHtml(person)}`;
+}
+
+const messageText = (text, person) => `${paragraphsOf(text).join('\n\n')}\n\n--\n${signatureText(person)}`;
+
+// "Sat, 14 Nov 2026 at 6:31 PM", in the office's time zone.
+function sentAt(date) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: env.TIMEZONE,
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+      .formatToParts(new Date(date))
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.weekday}, ${parts.day} ${parts.month} ${parts.year} at ${parts.hour}:${parts.minute} ${String(parts.dayPeriod).toUpperCase()}`;
+}
+
+// Typed text keeps its paragraphs and line breaks, and is escaped for HTML.
+// With `quote`, the earlier mail follows underneath, the way Gmail shows it
+// after Reply all: "On <date>, <name> <address> wrote:" and the mail, indented.
+function compose(text, person, quote) {
+  const quoted = quote
+    ? `
+<div style="margin-top:22px">
+<div style="color:#5f6368;font-size:13px;margin:0 0 8px">On ${escapeHtml(sentAt(quote.at))}, ${escapeHtml(quote.from.name)} &lt;${escapeHtml(quote.from.email)}&gt; wrote:</div>
+<blockquote style="margin:0 0 0 6px;border-left:1px solid #cccccc;padding-left:12px">
+${messageHtml(quote.text, quote.from)}
+</blockquote>
+</div>`
+    : '';
+
   const html = `<!doctype html>
 <html><body style="margin:0;padding:0;background:#ffffff">
 <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#202124">
-${paragraphs.map((part) => `<p style="margin:0 0 14px">${escapeHtml(part).replace(/\n/g, '<br>')}</p>`).join('\n')}
-<p style="margin:18px 0 8px;color:#5f6368">--</p>
-${signatureHtml(person)}
+${messageHtml(text, person)}${quoted}
 </div>
 </body></html>`;
 
-  return { html, text: `${paragraphs.join('\n\n')}\n\n--\n${signatureText(person)}\n` };
+  const quotedText = quote
+    ? `\n\nOn ${sentAt(quote.at)}, ${quote.from.name} <${quote.from.email}> wrote:\n\n${messageText(quote.text, quote.from)
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n')}`
+    : '';
+
+  return { html, text: `${messageText(text, person)}${quotedText}\n` };
 }
 
 /* Recipients */
@@ -229,16 +277,26 @@ export function applicationMail({ employee, admins, leave, typeName }) {
   };
 }
 
-// The admin answers in the same thread, to the same people.
-export function decisionMail({ employee, reviewer, leave, decision, reply, note }) {
+// The admin answers in the same thread, to the same people. With
+// `quoteOriginal` the employee's own mail is quoted under the reply, like
+// Gmail's Reply all, so everyone sees what was asked and the answer together.
+export function decisionMail({ employee, reviewer, leave, decision, reply, note, quoteOriginal = false }) {
   const body = reply || replyDraft({ employee, reviewer, decision, note });
+  const quote = quoteOriginal
+    ? {
+        at: leave.createdAt ?? new Date(),
+        from: employee,
+        text:
+          leave.message || applicationDraft({ employee, leave, typeName: leave.leaveType?.name, reason: leave.reason }),
+      }
+    : null;
   return {
     to: [employee.email],
     cc: unique(everyoneOn(leave), [employee.email, reviewer.email]),
     sender: reviewer,
     subject: replySubject(leave),
     inReplyTo: leave.mailMessageId,
-    ...compose(body, reviewer),
+    ...compose(body, reviewer, quote),
   };
 }
 

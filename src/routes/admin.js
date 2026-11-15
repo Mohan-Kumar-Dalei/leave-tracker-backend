@@ -241,6 +241,8 @@ const reviewSchema = z
     note: z.string().trim().max(300).optional(),
     // The mail text the admin sends back. Empty means the usual one-line answer.
     reply: z.string().trim().min(5, 'Write a short reply').max(4000, 'Keep the reply under 4000 characters').optional(),
+    // Reply all: quote the employee's own mail under the reply.
+    quoteOriginal: z.boolean().optional(),
   })
   .refine((body) => body.decision === 'approved' || (body.note?.length ?? 0) >= 3 || body.reply, {
     message: 'Tell the employee why this was rejected.',
@@ -251,7 +253,7 @@ router.patch(
   '/leaves/:id/review',
   validate({ params: idParams, body: reviewSchema }),
   async (req, res) => {
-    const { decision, reply } = req.valid.body;
+    const { decision, reply, quoteOriginal = false } = req.valid.body;
     // Without a separate note, the middle of a rejection reply is the reason shown in the app.
     const note = req.valid.body.note || (decision === 'rejected' && reply ? letterCore(reply).slice(0, 300) : '');
 
@@ -307,6 +309,7 @@ router.patch(
         decision,
         reply,
         note,
+        quoteOriginal,
       }),
     );
   },

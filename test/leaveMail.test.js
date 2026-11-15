@@ -102,4 +102,26 @@ describe('leave mails', () => {
     assert.equal(mail.html.includes('<script>'), false);
     assert.equal(mail.html.includes('<img src=x'), false);
   });
+
+  it('quotes the employee mail under the reply for Reply all, and only when asked', () => {
+    const sent = {
+      ...leave,
+      createdAt: '2026-11-14T13:01:00Z',
+      message: 'Hi Sir,\n\nI would like to request leave on (16/11/2026, first half).\n\nThanks & Regards,\nRavi',
+    };
+    const reply = 'Hi Ravi,\n\nYour leave request is approved.\n\nThanks,\nAsha';
+    const all = decisionMail({ employee, reviewer: admin, leave: sent, decision: 'approved', reply, quoteOriginal: true });
+
+    assert.equal(all.subject, 'Re: Leave Application');
+    assert.equal(all.inReplyTo, '<leave.1@example.com>');
+    // The reply comes first, then the line Gmail writes, then the original mail, quoted.
+    const at = all.text.indexOf('On Sat, 14 Nov 2026 at 6:31 PM, Ravi Kumar Das <ravi@example.com> wrote:');
+    assert.ok(all.text.indexOf('Your leave request is approved.') < at && at > 0);
+    assert.match(all.text, /> I would like to request leave on \(16\/11\/2026, first half\)\./);
+    assert.match(all.html, /<blockquote[^>]*>[\s\S]*I would like to request leave on \(16\/11\/2026, first half\)\.[\s\S]*<\/blockquote>/);
+
+    const plain = decisionMail({ employee, reviewer: admin, leave: sent, decision: 'approved', reply });
+    assert.equal(plain.text.includes('wrote:'), false);
+    assert.equal(plain.html.includes('<blockquote'), false);
+  });
 });
