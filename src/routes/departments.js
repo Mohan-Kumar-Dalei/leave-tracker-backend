@@ -13,6 +13,7 @@ import {
   leadOf,
   memberFilter,
   reportsToFor,
+  syncRoles,
 } from '../services/departments.js';
 import { sendMail } from '../services/mail.js';
 import { notifyUsers } from '../services/notify.js';
@@ -162,8 +163,10 @@ router.put(
         await person.save();
       }
     }
+    const previous = department.admins[0];
     department.admins = chosen ? [chosen] : [];
     await department.save();
+    await syncRoles([previous, chosen]);
     await arrangeTree(department);
     res.json({ ok: true });
 

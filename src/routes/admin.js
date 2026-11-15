@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import env from '../config/env.js';
 import { validate } from '../middleware/validate.js';
@@ -21,8 +22,9 @@ import { assessLeave } from '../services/leaves.js';
 import { sendMail } from '../services/mail.js';
 import { decisionMail, letterCore } from '../services/leaveMail.js';
 import { range } from '../services/mailTemplates.js';
-import { notHidden, visibleLeaveOwners } from '../services/hidden.js';
+import { notHidden } from '../services/hidden.js';
 import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
+import { canReview, inScope, leaveOwnersIn, peopleIn, reviewersFor, scopeOf } from '../services/scope.js';
 import { revokeAllSessions } from '../services/tokens.js';
 import { addDays, monthRange, parseDay, toDayString, todayString, yearRange } from '../utils/dates.js';
 import {
@@ -40,19 +42,37 @@ import { day, email, idParams, limit, objectId, page, password, phone, year } fr
 
 const router = Router();
 
+// Every admin page shows only the departments the person runs: the whole
+// company for the owner, their department(s) for a manager or an assistant
+// manager (see services/scope.js).
+router.use(async (req, _res, next) => {
+  req.scope = await scopeOf(req.user);
+  next();
+});
+
+// Pages about one employee are only for whoever runs that employee's department.
+router.use('/employees/:id', async (req, _res, next) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return next();
+  const person = await User.findById(req.params.id).select('department role');
+  if (person && (person.role === 'owner' || !(await inScope(req.scope, person)))) {
+    return next(notFound('That employee was not found.'));
+  }
+  return next();
+});
+
 const BCRYPT_COST = 12;
 const employeeFields = 'name email employeeId department designation';
 const typeFields = 'name code tracksBalance restrictedHolidayOnly';
 
 /* Overview */
 
-router.get('/overview', async (_req, res) => {
+router.get('/overview', async (req, res) => {
   const todayValue = todayString(env.TIMEZONE);
   const today = parseDay(todayValue);
   const year_ = today.getUTCFullYear();
   const month = monthRange(year_, today.getUTCMonth());
 
-  const owners = await visibleLeaveOwners();
+  const owners = await leaveOwnersIn(req.scope);
   const [pendingItems, pendingCount, awayToday, nextUp, employees, approvedThisMonth, byType, holidays, earlierYear] =
     await Promise.all([
       Leave.find({ status: 'pending', user: owners })
@@ -70,7 +90,7 @@ router.get('/overview', async (_req, res) => {
         .populate('leaveType', typeFields)
         .sort({ from: 1 })
         .limit(8),
-      User.countDocuments({ isActive: true, role: 'employee', ...notHidden }),
+      User.countDocuments({ isActive: true, role: 'employee', ...notHidden, ...peopleIn(req.scope) }),
       Leave.aggregate([
         { $match: { status: 'approved', user: owners, from: { $gte: month.start, $lte: month.end } } },
         { $group: { _id: null, days: { $sum: '$days' } } },
@@ -132,7 +152,7 @@ router.get(
     const { start, end } = yearRange(selectedYear);
 
     const [leaves, holidays] = await Promise.all([
-      Leave.find({ year: selectedYear, status: { $in: ['pending', 'approved'] }, user: await visibleLeaveOwners() })
+      Leave.find({ year: selectedYear, status: { $in: ['pending', 'approved'] }, user: await leaveOwnersIn(req.scope) })
         .populate('user', 'name')
         .populate('leaveType', 'name'),
       Holiday.find({ date: { $gte: start, $lte: end } }),
@@ -178,8 +198,8 @@ const leaveQuery = z.object({
   limit: limit.optional(),
 });
 
-async function buildLeaveFilter({ status, user, leaveType, from, to, q }) {
-  const filter = { user: await visibleLeaveOwners() };
+async function buildLeaveFilter({ status, user, leaveType, from, to, q }, scope) {
+  const filter = { user: await leaveOwnersIn(scope) };
   if (status) filter.status = status;
   if (user) filter.user = { ...filter.user, $eq: user };
   if (leaveType) filter.leaveType = leaveType;
@@ -188,7 +208,9 @@ async function buildLeaveFilter({ status, user, leaveType, from, to, q }) {
 
   if (q) {
     const pattern = new RegExp(escapeRegex(q), 'i');
-    const people = await User.find({ $or: [{ name: pattern }, { employeeId: pattern }], ...notHidden }).select('_id');
+    const people = await User.find({ $or: [{ name: pattern }, { employeeId: pattern }], ...notHidden, ...peopleIn(scope) })
+      .collation({ locale: 'en', strength: 2 })
+      .select('_id');
     filter.user = { ...filter.user, $in: people.map((person) => person._id) };
   }
   return filter;
@@ -196,7 +218,7 @@ async function buildLeaveFilter({ status, user, leaveType, from, to, q }) {
 
 router.get('/leaves', validate({ query: leaveQuery }), async (req, res) => {
   const pageInfo = paginate(req.valid.query);
-  const filter = await buildLeaveFilter(req.valid.query);
+  const filter = await buildLeaveFilter(req.valid.query, req.scope);
 
   const [items, total] = await Promise.all([
     Leave.find(filter)
@@ -213,7 +235,7 @@ router.get('/leaves', validate({ query: leaveQuery }), async (req, res) => {
 });
 
 router.get('/leaves.csv', validate({ query: leaveQuery }), async (req, res) => {
-  const filter = await buildLeaveFilter(req.valid.query);
+  const filter = await buildLeaveFilter(req.valid.query, req.scope);
   const leaves = await Leave.find(filter)
     .populate('user', employeeFields)
     .populate('leaveType', 'name')
@@ -289,15 +311,20 @@ router.patch(
 
     const leave = await Leave.findById(req.valid.params.id)
       .select('+mailMessageId')
-      .populate('user', 'name email designation phone role signatureHtml')
+      .populate('user', 'name email designation phone role signatureHtml department')
       .populate('leaveType', 'name tracksBalance');
 
     if (!leave) throw notFound('That leave request was not found.');
+    if (!(await inScope(req.scope, leave.user))) throw notFound('That leave request was not found.');
     if (leave.status !== 'pending') throw conflict(`This request is already ${leave.status}.`);
 
-    if (leave.user.id === req.user.id) {
-      const admins = await getActiveAdmins();
-      if (admins.length > 1) throw forbidden('Another admin needs to review your own request.');
+    // Employees' leave is decided by the assistant manager, the assistant
+    // manager's by the manager and the manager's by HR. Your own request goes
+    // to whoever is above you; only when there is nobody can you decide it.
+    if (!(await canReview(req.user, leave.user))) {
+      const others = (await reviewersFor(leave.user)).filter((person) => person.id !== req.user.id);
+      if (leave.user.id !== req.user.id) throw forbidden(`${others[0]?.name ?? 'HR'} decides this request.`);
+      if (others.length) throw forbidden(`${others[0].name} needs to review your own request.`);
     }
 
     if (decision === 'approved' && leave.leaveType.tracksBalance) {
@@ -362,6 +389,13 @@ const employeeBody = {
   workFromHome: z.boolean().optional(),
 };
 
+// Who becomes an admin is decided in the organisation (by HR), not here.
+function assertWithin(req, body) {
+  if (body.role === 'admin' && req.user.role !== 'owner') {
+    throw forbidden('Admins are set in the organisation: HR makes someone a manager or assistant manager.');
+  }
+}
+
 // A manager must exist, and the chain must not loop back to the person.
 async function assertReportsTo(personId, managerId) {
   if (!managerId) return;
@@ -390,8 +424,9 @@ router.get(
     const { q, status = 'active' } = req.valid.query;
     const pageInfo = paginate(req.valid.query);
 
-    // Admins run the system and are not part of the employee list.
-    const filter = { role: 'employee', ...notHidden };
+    // Everyone in the departments this person runs, other than themselves, so
+    // a manager also sees their assistant manager. The owner is not listed.
+    const filter = { role: { $ne: 'owner' }, _id: { $ne: req.user._id }, ...notHidden, ...peopleIn(req.scope) };
     if (status !== 'all') filter.isActive = status === 'active';
     if (q) {
       const pattern = new RegExp(escapeRegex(q), 'i');
@@ -399,8 +434,8 @@ router.get(
     }
 
     const [items, total] = await Promise.all([
-      User.find(filter).sort({ name: 1 }).skip(pageInfo.skip).limit(pageInfo.limit),
-      User.countDocuments(filter),
+      User.find(filter).collation({ locale: 'en', strength: 2 }).sort({ name: 1 }).skip(pageInfo.skip).limit(pageInfo.limit),
+      User.countDocuments(filter).collation({ locale: 'en', strength: 2 }),
     ]);
 
     res.json({ items, ...pageMeta(total, pageInfo) });
@@ -413,6 +448,9 @@ router.post(
   validate({ body: z.strictObject({ ...employeeBody, password }) }),
   async (req, res) => {
     const { joinedOn, password: chosenPassword, ...rest } = req.valid.body;
+    assertWithin(req, rest);
+    // A department admin adds people to their own department.
+    if (req.scope && !(await inScope(req.scope, rest))) rest.department = req.scope[0];
 
     const user = await User.create({
       ...rest,
@@ -464,6 +502,10 @@ router.patch(
     const { joinedOn, ...rest } = req.valid.body;
     const target = await User.findById(req.valid.params.id);
     if (!target) throw notFound('That employee was not found.');
+    assertWithin(req, rest);
+    if (rest.department !== undefined && req.scope && !(await inScope(req.scope, rest))) {
+      throw forbidden('You can only move people within the departments you run. HR can move them elsewhere.');
+    }
     if (rest.reportsTo !== undefined) await assertReportsTo(target.id, rest.reportsTo);
 
     const losingAdmin =

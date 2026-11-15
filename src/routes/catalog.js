@@ -7,7 +7,7 @@ import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES } from '../models/Leave.js';
 import LeaveType from '../models/LeaveType.js';
 import { monthRange, parseDay, todayString, yearRange } from '../utils/dates.js';
-import { visibleLeaveOwners } from '../services/hidden.js';
+import { isStaff, leaveOwnersIn, scopeOf } from '../services/scope.js';
 import { conflict, notFound } from '../utils/http.js';
 import { day, idParams, year } from '../utils/schemas.js';
 
@@ -25,7 +25,7 @@ const leaveTypeBody = {
 };
 
 router.get('/leave-types', async (req, res) => {
-  const filter = req.user.role === 'admin' ? {} : { isActive: true };
+  const filter = isStaff(req.user) ? {} : { isActive: true };
   const items = await LeaveType.find(filter).sort({ order: 1, name: 1 });
   res.json({ items });
 });
@@ -117,10 +117,12 @@ router.get(
   async (req, res) => {
     const [yearPart, monthPart] = req.valid.query.month.split('-').map(Number);
     const { start, end } = monthRange(yearPart, monthPart - 1);
-    const isAdmin = req.user.role === 'admin';
+    const isAdmin = isStaff(req.user);
+    // Each department sees its own people's leave; HR sees everyone's.
+    const owners = await leaveOwnersIn(await scopeOf(req.user));
 
     const [leaves, holidays] = await Promise.all([
-      Leave.find({ status: { $in: ACTIVE_STATUSES }, user: await visibleLeaveOwners(), from: { $lte: end }, to: { $gte: start } })
+      Leave.find({ status: { $in: ACTIVE_STATUSES }, user: owners, from: { $lte: end }, to: { $gte: start } })
         .populate('user', 'name')
         .populate('leaveType', 'name')
         .sort({ from: 1 }),

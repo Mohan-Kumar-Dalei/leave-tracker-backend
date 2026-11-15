@@ -1,11 +1,15 @@
 import env from './config/env.js';
 import { connectDb, disconnectDb } from './config/db.js';
 import { createApp } from './app.js';
+import { syncDepartments } from './services/departments.js';
 import { closeAllStreams } from './services/events.js';
 
 async function start() {
   await connectDb();
   console.log(`MongoDB connected, database "${env.MONGO_DB_NAME}"`);
+  // Everyone belongs to a department and each department knows who runs it,
+  // so leave goes to the right person from the first request.
+  await syncDepartments();
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {

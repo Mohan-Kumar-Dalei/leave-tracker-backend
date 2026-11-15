@@ -14,6 +14,7 @@ import {
   leadOf,
   memberFilter,
   syncDepartments,
+  syncRoles,
 } from '../services/departments.js';
 import { sendMail } from '../services/mail.js';
 import { inviteMail, inviteUrl } from '../services/orgMail.js';
@@ -100,7 +101,7 @@ router.get('/', async (_req, res) => {
         ...rest,
         manager: byId.get(String(manager ?? '')) ?? null,
         lead: byId.get(String(admins[0] ?? '')) ?? null,
-        invited: { assistant: pendingInvite(department, 'assistant') },
+        invited: { manager: pendingInvite(department, 'manager'), assistant: pendingInvite(department, 'assistant') },
         waiting: waiting.find((row) => String(row._id) === department.id)?.count ?? 0,
         people: people.filter((person) => sameName(person.department, department.name)).length,
       };
@@ -109,44 +110,65 @@ router.get('/', async (_req, res) => {
   });
 });
 
-// The four steps of "Add department": its name, the manager's name, the
-// assistant manager's name and the assistant manager's email. The invitation
-// goes to the assistant manager, the first to register: they run the
-// department and bring in the team. The manager is a name on the department.
+// The four steps of "Add department": its name, the manager (name, and an
+// email to invite them), the assistant manager's name and the assistant
+// manager's email. The assistant manager, who usually registers first, is the
+// department's admin and brings in the team; the manager gets an admin panel
+// too and approves the assistant manager's leave.
 const newDepartment = z.strictObject({
   name: departmentName,
   location,
   managerName: name.optional(),
+  managerEmail: email.optional(),
   assistantName: name.optional(),
   assistantEmail: email.optional(),
 });
 
 router.post('/departments', validate({ body: newDepartment }), async (req, res) => {
-  const { name: title, location: where = env.COMPANY_LOCATION, managerName = '', assistantName, assistantEmail } =
-    req.valid.body;
+  const {
+    name: title,
+    location: where = env.COMPANY_LOCATION,
+    managerName = '',
+    managerEmail,
+    assistantName,
+    assistantEmail,
+  } = req.valid.body;
   if (await findByName(title)) throw conflict(`There is already a department called ${title}.`);
   if (assistantEmail && !assistantName) throw badRequest("Write the assistant manager's name.");
+  if (managerEmail && !managerName) throw badRequest("Write the manager's name.");
+  if (managerEmail && managerEmail === assistantEmail) {
+    throw badRequest('The manager and the assistant manager need different emails.');
+  }
   if (assistantEmail) await assertNewEmail(assistantEmail);
+  if (managerEmail) await assertNewEmail(managerEmail);
 
   const department = await Department.create({ name: title, location: where, managerName });
-  const invites = assistantEmail
-    ? [await invite({ department, role: 'assistant', name: assistantName, email: assistantEmail, designation: 'Assistant Manager', owner: req.user })]
-    : [];
+  const invites = [];
+  if (assistantEmail) {
+    invites.push(await invite({ department, role: 'assistant', name: assistantName, email: assistantEmail, designation: 'Assistant Manager', owner: req.user }));
+  }
+  if (managerEmail) {
+    invites.push(await invite({ department, role: 'manager', name: managerName, email: managerEmail, designation: 'Manager', owner: req.user }));
+  }
   res.status(201).json({ department, invites });
 });
 
-// Sends the assistant manager a new invitation (the old link stops working),
-// e.g. when the first one was lost or went to the wrong address.
+// Sends a new invitation (the old link stops working), e.g. when the first
+// one was lost or went to the wrong address, or to invite the manager later.
 router.post(
   '/departments/:id/invites',
-  validate({ params: idParams, body: z.strictObject({ name, email }) }),
+  validate({
+    params: idParams,
+    body: z.strictObject({ role: z.enum(['assistant', 'manager']).default('assistant'), name, email }),
+  }),
   async (req, res) => {
     const department = await departmentOr404(req.valid.params.id);
-    const { name: who, email: address } = req.valid.body;
+    const { role, name: who, email: address } = req.valid.body;
     await assertNewEmail(address);
-    res.status(201).json({
-      invite: await invite({ department, role: 'assistant', name: who, email: address, designation: 'Assistant Manager', owner: req.user }),
-    });
+    const designation = role === 'manager' ? 'Manager' : 'Assistant Manager';
+    if (role === 'manager') department.managerName = who;
+    await department.save();
+    res.status(201).json({ invite: await invite({ department, role, name: who, email: address, designation, owner: req.user }) });
   },
 );
 
@@ -176,12 +198,16 @@ router.patch(
       const clash = await findByName(title);
       if (clash && clash.id !== department.id) throw conflict(`There is already a department called ${title}.`);
     }
+    // People whose admin role may change: the old and new manager and AM.
+    const touched = [];
     if (lead !== undefined) {
       await assertPerson(lead);
+      touched.push(department.admins[0], lead);
       department.admins = lead ? [lead] : [];
     }
     if (manager !== undefined) {
       await assertPerson(manager);
+      touched.push(department.manager, manager);
       department.manager = manager;
     }
     if (title && title !== department.name) {
@@ -190,6 +216,7 @@ router.patch(
     }
     if (where !== undefined) department.location = where;
     await department.save();
+    await syncRoles(touched);
     res.json({ department });
   },
 );

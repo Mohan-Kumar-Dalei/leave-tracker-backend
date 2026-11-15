@@ -24,8 +24,10 @@ export async function requireAuth(req, _res, next) {
   return next();
 }
 
+// Admin pages are for department admins (managers and assistant managers) and
+// for the owner (HR), who sees the whole company.
 export function requireAdmin(req, _res, next) {
-  if (req.user?.role !== 'admin') return next(forbidden());
+  if (req.user?.role !== 'admin' && req.user?.role !== 'owner') return next(forbidden());
   return next();
 }
 

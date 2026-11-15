@@ -16,7 +16,8 @@ import {
 } from '../services/leaveMail.js';
 import { newMessageId, sendMail } from '../services/mail.js';
 import { range } from '../services/mailTemplates.js';
-import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
+import { broadcastChange, notifyUsers } from '../services/notify.js';
+import { canReview, reviewersFor } from '../services/scope.js';
 import { todayString, toDayString } from '../utils/dates.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http.js';
 import { day, email, idParams, objectId } from '../utils/schemas.js';
@@ -71,9 +72,10 @@ router.post('/', applyLimiter, validate({ body: applySchema }), async (req, res)
 
   const { leaveType, holiday, from, to, days, year, session } = await assessLeave(req.user, body);
 
-  const admins = await getActiveAdmins();
-  const reviewers = admins.filter((admin) => admin.id !== req.user.id);
-  const mailTo = reviewers.length ? reviewers : admins;
+  // The request goes to whoever decides it: the assistant manager for an
+  // employee, the manager for the assistant manager, HR for the manager.
+  const reviewers = await reviewersFor(req.user);
+  const mailTo = reviewers;
   // The employee may change To and CC. Without a choice, the admins get it.
   const chosenTo = body.mailTo ? cleanAddresses(body.mailTo, [req.user.email]) : undefined;
   if (chosenTo && chosenTo.length === 0) throw badRequest('Add at least one person other than you in To.');
@@ -129,12 +131,13 @@ router.patch('/:id/cancel', validate({ params: idParams }), async (req, res) => 
   const leave = await Leave.findById(req.valid.params.id)
     .select('+mailMessageId')
     .populate('leaveType', 'name')
-    .populate('user', 'name email employeeId designation phone role signatureHtml');
+    .populate('user', 'name email employeeId designation phone role signatureHtml department');
 
   if (!leave) throw notFound('That leave request was not found.');
 
   const isOwner = leave.user.id === req.user.id;
-  const isAdmin = req.user.role === 'admin';
+  // Someone else's leave can be cancelled by whoever may decide it.
+  const isAdmin = !isOwner && (await canReview(req.user, leave.user));
   if (!isOwner && !isAdmin) throw forbidden();
 
   if (!['pending', 'approved'].includes(leave.status)) {
@@ -155,7 +158,7 @@ router.patch('/:id/cancel', validate({ params: idParams }), async (req, res) => 
 
   res.json({ leave: updated });
 
-  const admins = await getActiveAdmins();
+  const admins = await reviewersFor(leave.user);
   const adminIds = admins.map((admin) => admin.id);
   const cancelledByAdmin = !isOwner;
 

@@ -1142,3 +1142,87 @@ describe('organisation', () => {
     await sita.put(`/api/departments/${dept.id}/assistant`).send({ user: approved.body.person.id }).expect(403);
   });
 });
+
+describe('leave inside the organisation', () => {
+  beforeEach(async () => {
+    await Department.init();
+    await Department.deleteMany({});
+  });
+
+  async function acceptInvite(link, employeeId, password) {
+    const token = link.split('/join/invite/')[1];
+    const { body } = await request(app).get(`/api/join/invite/${token}`).expect(200);
+    await request(app).post(`/api/join/invite/${token}`).send({ name: body.name, employeeId, password }).expect(201);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ email: body.email, password }).expect(200);
+    return agent;
+  }
+
+  it('sends each request to the right person and keeps each admin to their department', async () => {
+    const hr = await signIn(await makeUser({ role: 'owner' }));
+    // Content Integration as it is today: one admin and an employee.
+    const oldAdmin = await signIn(await makeUser({ role: 'admin', name: 'Old Admin' }));
+    const ciEmployee = await makeUser({ name: 'CI Person' });
+
+    const created = await hr
+      .post('/api/org/departments')
+      .send({
+        name: 'Sales',
+        managerName: 'Ravi Kumar',
+        managerEmail: 'ravi@example.com',
+        assistantName: 'Sita Das',
+        assistantEmail: 'sita@example.com',
+      })
+      .expect(201);
+    const links = Object.fromEntries(created.body.invites.map((item) => [item.role, item.link]));
+    const sita = await acceptInvite(links.assistant, 'S-001', 'sita-pass-123');
+    const ravi = await acceptInvite(links.manager, 'S-002', 'ravi-pass-123');
+    assert.equal((await User.findOne({ email: 'sita@example.com' })).role, 'admin');
+    assert.equal((await User.findOne({ email: 'ravi@example.com' })).role, 'admin');
+
+    const added = await hr
+      .post('/api/org/people')
+      .send({ name: 'Amit Rout', email: 'amit@example.com', employeeId: 'S-003', department: created.body.department.id })
+      .expect(201);
+    const amit = request.agent(app);
+    await amit.post('/api/auth/login').send({ email: 'amit@example.com', password: added.body.startingPassword }).expect(200);
+
+    // Who each person's request goes to.
+    const toOf = async (agent) => (await agent.get('/api/me/compose').expect(200)).body.to.map((person) => person.email);
+    assert.deepEqual(await toOf(amit), ['sita@example.com']);
+    assert.deepEqual(await toOf(sita), ['ravi@example.com']);
+    assert.equal((await toOf(ravi)).length, 1); // HR
+
+    // The employee's request is Sita's to decide, not the other department's admin.
+    const amitLeave = (await apply(amit, { from: '2031-03-03', to: '2031-03-03' }).expect(201)).body.leave;
+    const pendingFor = async (agent) =>
+      (await agent.get('/api/admin/leaves?status=pending').expect(200)).body.items.map((item) => item.id);
+    assert.deepEqual(await pendingFor(sita), [amitLeave.id]);
+    assert.deepEqual(await pendingFor(oldAdmin), []);
+    assert.deepEqual(await pendingFor(hr), [amitLeave.id]);
+    await oldAdmin.patch(`/api/admin/leaves/${amitLeave.id}/review`).send({ decision: 'approved' }).expect(404);
+    await sita.patch(`/api/admin/leaves/${amitLeave.id}/review`).send({ decision: 'approved' }).expect(200);
+
+    // Sita's own leave is the manager's to decide; the manager's is HR's.
+    const sitaLeave = (await apply(sita, { from: '2031-03-04', to: '2031-03-04' }).expect(201)).body.leave;
+    await sita.patch(`/api/admin/leaves/${sitaLeave.id}/review`).send({ decision: 'approved' }).expect(403);
+    await ravi.patch(`/api/admin/leaves/${sitaLeave.id}/review`).send({ decision: 'approved' }).expect(200);
+    const raviLeave = (await apply(ravi, { from: '2031-03-05', to: '2031-03-05' }).expect(201)).body.leave;
+    await sita.patch(`/api/admin/leaves/${raviLeave.id}/review`).send({ decision: 'approved' }).expect(403);
+    await hr.patch(`/api/admin/leaves/${raviLeave.id}/review`).send({ decision: 'approved' }).expect(200);
+
+    // Employees and their pages stay within the department.
+    const names = async (agent) => (await agent.get('/api/admin/employees').expect(200)).body.items.map((item) => item.name);
+    assert.deepEqual((await names(sita)).sort(), ['Amit Rout', 'Ravi Kumar']);
+    assert.ok(!(await names(oldAdmin)).includes('Amit Rout'));
+    assert.ok((await names(oldAdmin)).includes('CI Person'));
+    await oldAdmin.get(`/api/admin/employees/${added.body.person.id}`).expect(404);
+    await sita.get(`/api/admin/employees/${ciEmployee.id}`).expect(404);
+
+    // Only HR decides who is an admin.
+    await sita
+      .post('/api/admin/employees')
+      .send({ name: 'New One', email: 'new.one@example.com', employeeId: 'S-009', role: 'admin', password: 'new-pass-1234' })
+      .expect(403);
+  });
+});

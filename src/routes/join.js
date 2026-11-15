@@ -7,7 +7,7 @@ import { validate } from '../middleware/validate.js';
 import Department from '../models/Department.js';
 import JoinRequest from '../models/JoinRequest.js';
 import User from '../models/User.js';
-import { arrangeTree, findInvite } from '../services/departments.js';
+import { arrangeTree, findInvite, syncRoles } from '../services/departments.js';
 import { notifyUsers } from '../services/notify.js';
 import { badRequest, conflict, notFound } from '../utils/http.js';
 import { email, password, phone } from '../utils/schemas.js';
@@ -79,13 +79,17 @@ router.post(
       phone: body.phone,
       designation: invite.designation || ROLE_NAME[invite.role],
       department: department.name,
-      role: 'employee',
+      // The assistant manager is the department's admin, and the manager has
+      // an admin panel too.
+      role: 'admin',
       passwordHash: await bcrypt.hash(body.password, BCRYPT_COST),
     });
 
+    const replaced = invite.role === 'manager' ? department.manager : department.admins[0];
     if (invite.role === 'manager') department.manager = user._id;
     else department.admins = [user._id];
     await department.save();
+    await syncRoles([replaced]);
     invite.acceptedAt = new Date();
     invite.user = user._id;
     await invite.save();

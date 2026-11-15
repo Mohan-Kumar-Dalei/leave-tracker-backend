@@ -10,6 +10,7 @@ import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES, LEAVE_STATUSES } from '../models/Leave.js';
 import { BALANCE_HEADERS, balanceCells, getBalances, getMonthlyUsage } from '../services/balances.js';
 import { mailContacts } from '../services/contacts.js';
+import { departmentOf, reviewersFor } from '../services/scope.js';
 import {
   appPasswordAvailable,
   checkAppPassword,
@@ -201,15 +202,18 @@ router.patch('/adjustments/:id/dismiss', validate({ params: idParams }), async (
 // it goes: who it is to, who is copied by default, who else can be copied, and
 // the signature.
 router.get('/compose', async (req, res) => {
-  const { contacts, users } = await mailContacts();
-  const admins = users.filter((user) => user.role === 'admin' && user.id !== req.user.id);
+  const { contacts } = await mailContacts();
+  // To: whoever decides this person's leave (see services/scope.js).
+  const admins = await reviewersFor(req.user);
   const to = admins.map((admin) => admin.email);
+  // The usual CC list in the server settings belongs to Content Integration.
+  const usualCc = departmentOf(req.user) === env.DEFAULT_DEPARTMENT ? env.leaveMailContacts : [];
 
   res.json({
     greeting: env.LEAVE_MAIL_GREETING,
     subject: APPLICATION_SUBJECT,
     to: admins.map(({ name, email }) => ({ name, email })),
-    defaultCc: env.leaveMailContacts.filter((contact) => contact.email !== req.user.email && !to.includes(contact.email)),
+    defaultCc: usualCc.filter((contact) => contact.email !== req.user.email && !to.includes(contact.email)),
     contacts: contacts.filter((contact) => contact.email !== req.user.email),
     signature: {
       ...signatureData(),

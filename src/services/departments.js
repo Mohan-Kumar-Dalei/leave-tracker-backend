@@ -34,6 +34,34 @@ export async function syncDepartments() {
     });
     known.add(name.toLowerCase());
   }
+
+  // A department with nobody running it yet takes its existing admin as the
+  // assistant manager (as Mrutyunjaya Sahu runs Content Integration), so
+  // leave keeps going to the same person after the merge.
+  const unrun = await Department.find({ admins: { $size: 0 }, manager: null });
+  for (const department of unrun) {
+    const admin = await User.findOne({ ...memberFilter, role: 'admin', isActive: true, department: department.name })
+      .collation(CASE_INSENSITIVE)
+      .sort({ createdAt: 1 });
+    if (admin) await Department.updateOne({ _id: department._id }, { $set: { admins: [admin._id] } });
+  }
+
+  // Whoever runs a department (its manager or assistant manager) is an admin.
+  const leaders = await Department.find({}).select('manager admins');
+  const ids = leaders.flatMap((department) => [department.manager, ...department.admins]).filter(Boolean);
+  if (ids.length) await User.updateMany({ _id: { $in: ids }, role: 'employee' }, { $set: { role: 'admin' } });
+}
+
+// Managers and assistant managers have the admin role; someone who no longer
+// runs any department goes back to being an employee. The owner is left alone.
+export async function syncRoles(ids) {
+  for (const value of ids.filter(Boolean).map(String)) {
+    const runs = await Department.exists({ $or: [{ manager: value }, { admins: value }] });
+    await User.updateOne(
+      { _id: value, role: { $ne: 'owner' } },
+      { $set: { role: runs ? 'admin' : 'employee' } },
+    );
+  }
 }
 
 // A department by name, ignoring letter case.
