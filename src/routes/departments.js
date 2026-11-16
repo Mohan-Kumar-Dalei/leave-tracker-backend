@@ -51,7 +51,7 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
   const [members, requests, code] = await Promise.all([
     User.find({ ...memberFilter, isActive: true, ...peopleIn([department.name]) })
       .collation(CASE_INSENSITIVE)
-      .select('name employeeId email designation avatarUrl reportsTo')
+      .select('name employeeId email designation avatarUrl reportsTo teamLead')
       .sort({ name: 1 }),
     JoinRequest.find({ department: department._id, status: 'pending' }).sort({ createdAt: 1 }),
     joinCodeOf(department),
@@ -66,6 +66,8 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
     acceptedAt: { $exists: false },
     expiresAt: { $gt: new Date() },
   });
+  // A team lead is someone made one, or anyone others already report to.
+  const reportedTo = new Set(members.map((person) => String(person.reportsTo ?? '')));
   res.json({
     department: {
       id: department.id,
@@ -80,6 +82,8 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
       ...person.toJSON(),
       designation: person.designation || env.DEFAULT_DESIGNATION,
       place: String(person._id) === manager ? 'manager' : String(person._id) === lead ? 'assistant' : 'member',
+      teamLead: Boolean(person.teamLead) || reportedTo.has(person.id),
+      reportsTo: person.reportsTo ? String(person.reportsTo) : null,
     })),
     requests,
   });
@@ -178,6 +182,51 @@ router.post('/:id/requests/:requestId/reject', validate({ params: requestParams 
   await request.save();
   res.status(204).end();
 });
+
+// The manager or the assistant manager arranges the team: makes someone a
+// team lead (or not), and picks who each person reports to: the assistant
+// manager, the manager, or one of the team leads.
+const memberParams = z.strictObject({ id: objectId, userId: objectId });
+router.patch(
+  '/:id/members/:userId',
+  validate({
+    params: memberParams,
+    body: z.strictObject({ teamLead: z.boolean(), reportsTo: objectId.nullable() }).partial(),
+  }),
+  async (req, res) => {
+    const department = await managed(req, req.valid.params.id);
+    const inDepartment = { ...memberFilter, isActive: true, ...peopleIn([department.name]) };
+    const person = await User.findOne({ _id: req.valid.params.userId, ...inDepartment }).collation(CASE_INSENSITIVE);
+    if (!person) throw notFound(`That person is not in ${department.name}.`);
+    const leaders = [department.manager, leadOf(department)].filter(Boolean).map(String);
+    if (leaders.includes(person.id)) throw badRequest('The manager and the assistant manager are already above the team.');
+    const { teamLead, reportsTo } = req.valid.body;
+    const boss = leadOf(department) ?? department.manager ?? null;
+
+    if (teamLead !== undefined) {
+      person.teamLead = teamLead;
+      // No longer a lead: their team goes back to the assistant manager.
+      if (!teamLead) {
+        await User.updateMany({ ...inDepartment, reportsTo: person._id }, { $set: { reportsTo: boss } }).collation(
+          CASE_INSENSITIVE,
+        );
+      }
+    }
+    if (reportsTo !== undefined) {
+      const target = reportsTo ? String(reportsTo) : null;
+      if (target === person.id) throw badRequest('Someone cannot report to themselves.');
+      if (target && !leaders.includes(target)) {
+        const lead = await User.findOne({ _id: target, ...inDepartment }).collation(CASE_INSENSITIVE);
+        const leadsSomeone = lead && (lead.teamLead || (await User.exists({ ...inDepartment, reportsTo: lead._id })));
+        if (!leadsSomeone) throw badRequest('Pick the assistant manager, the manager or a team lead.');
+        if (String(lead.reportsTo ?? '') === person.id) throw badRequest(`${lead.name} reports to ${person.name}.`);
+      }
+      person.reportsTo = target ?? boss;
+    }
+    await person.save();
+    res.json({ person: { id: person.id, teamLead: person.teamLead, reportsTo: person.reportsTo ? String(person.reportsTo) : null } });
+  },
+);
 
 // The manager (or the owner) chooses the assistant manager from the team.
 // The team then reports to them, as in Content Integration.

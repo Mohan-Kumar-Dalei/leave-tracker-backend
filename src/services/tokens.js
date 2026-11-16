@@ -67,7 +67,7 @@ export async function rotateSession(req, res) {
   if (!stored) throw unauthorized();
 
   const user = await User.findById(stored.user).select('+tokenVersion');
-  if (!user || !user.isActive) throw unauthorized();
+  if (!user || !user.isActive || user.role === 'owner') throw unauthorized();
 
   if (stored.revokedAt) {
     if (Date.now() - stored.revokedAt.getTime() < REUSE_GRACE_MS) {

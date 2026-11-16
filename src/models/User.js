@@ -25,6 +25,9 @@ const userSchema = new mongoose.Schema(
     hidden: { type: Boolean, default: false, index: true },
     // Who this person reports to, for the department tree and "Reporting to".
     reportsTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Made a team lead by their manager or assistant manager; others in the
+    // department can then report to them.
+    teamLead: { type: Boolean, default: false },
     // Works from home, shown as a tag in the department tree.
     workFromHome: { type: Boolean, default: false },
 

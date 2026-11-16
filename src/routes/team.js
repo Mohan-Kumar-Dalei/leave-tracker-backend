@@ -22,8 +22,8 @@ router.get('/', async (req, res) => {
   const day = parseDay(today);
 
   const [people, onLeave, departments] = await Promise.all([
-    User.find({ isActive: true, ...notHidden })
-      .select('name employeeId email phone designation department role avatarUrl reportsTo workFromHome')
+    User.find({ isActive: true, role: { $ne: 'owner' }, ...notHidden })
+      .select('name employeeId email phone designation department role avatarUrl reportsTo workFromHome teamLead')
       .sort({ name: 1 }),
     Leave.find({ status: 'approved', from: { $lte: day }, to: { $gte: day } }).populate('leaveType', 'name code'),
     Department.find().select('name manager admins'),
@@ -58,6 +58,7 @@ router.get('/', async (req, res) => {
       location: env.COMPANY_LOCATION,
       reportsTo: owner || !person.reportsTo ? null : String(person.reportsTo),
       workFromHome: person.workFromHome,
+      teamLead: Boolean(person.teamLead),
       leave: leaveOf.get(person.id) ?? null,
       // The departments this person manages; they head each one's tree.
       manages: [],

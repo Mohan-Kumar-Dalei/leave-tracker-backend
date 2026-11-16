@@ -79,15 +79,17 @@ export async function reviewersFor(person) {
   const department = await departmentRecord(person);
   const active = (ids) =>
     User.find({ _id: { $in: ids.filter(Boolean) }, isActive: true }).select('name email role designation phone signatureHtml');
-  const owners = () => User.find({ role: 'owner', isActive: true }).select('name email role');
+  // HR is turned off for now, so nobody above a manager gets requests.
+  const owners = async () => [];
 
   const lead = department?.admins?.[0];
   const manager = department?.manager;
   const me = id(person);
 
   let picked = [];
-  if (me && me === id(manager)) picked = await owners();
-  else if (me && me === id(lead)) picked = manager ? await active([manager]) : [];
+  // A manager's request goes above them only, never down to their own team.
+  if (me && me === id(manager)) return owners();
+  if (me && me === id(lead)) picked = manager ? await active([manager]) : [];
   else picked = await active([lead && id(lead) !== me ? lead : null]);
   if (!picked.length && manager && id(manager) !== me) picked = await active([manager]);
   if (!picked.length) {

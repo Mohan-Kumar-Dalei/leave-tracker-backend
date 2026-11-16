@@ -17,7 +17,7 @@ export async function requireAuth(req, _res, next) {
   }
 
   const user = await User.findById(payload.sub).select('+tokenVersion');
-  if (!user || !user.isActive || user.tokenVersion !== payload.v) {
+  if (!user || !user.isActive || user.role === 'owner' || user.tokenVersion !== payload.v) {
     return next(unauthorized('Your session has expired.'));
   }
 

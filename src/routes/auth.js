@@ -46,7 +46,8 @@ router.post(
     const hash = user?.passwordHash ?? DUMMY_HASH;
     const matches = await bcrypt.compare(attempt, hash);
 
-    if (!user || !user.isActive || !user.passwordHash) throw unauthorized(INVALID_LOGIN);
+    // HR (owner) accounts are turned off for now: managers run the company.
+    if (!user || !user.isActive || !user.passwordHash || user.role === 'owner') throw unauthorized(INVALID_LOGIN);
 
     if (user.lockedUntil && user.lockedUntil > new Date()) {
       throw unauthorized(`Too many attempts. Try again in ${LOCK_MINUTES} minutes or reset your password.`);
