@@ -1,3 +1,4 @@
+import Department from '../models/Department.js';
 import User from '../models/User.js';
 import { verifyAccessToken, ACCESS_COOKIE } from '../services/tokens.js';
 import { forbidden, unauthorized } from '../utils/http.js';
@@ -29,6 +30,18 @@ export async function requireAuth(req, _res, next) {
 export function requireAdmin(req, _res, next) {
   if (req.user?.role !== 'admin' && req.user?.role !== 'owner') return next(forbidden());
   return next();
+}
+
+// The Organisation page: the owner (HR), and a manager for the departments
+// they run.
+export async function requireOrganiser(req, _res, next) {
+  try {
+    if (req.user?.role === 'owner') return next();
+    if (req.user?.role === 'admin' && (await Department.exists({ manager: req.user._id }))) return next();
+    return next(forbidden());
+  } catch (error) {
+    return next(error);
+  }
 }
 
 export function requireOwner(req, _res, next) {

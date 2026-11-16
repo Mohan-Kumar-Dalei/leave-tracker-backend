@@ -1239,52 +1239,62 @@ describe('registering on your own', () => {
     await Department.deleteMany({});
   });
 
-  it('lets the first HR register, then a manager with HR approval, who invites the assistant manager', async () => {
-    assert.equal((await request(app).get('/api/join/setup').expect(200)).body.ownerExists, false);
-    const hrBody = { name: 'Neha HR', email: 'hr@example.com', password: 'hr-pass-12345' };
-    await request(app).post('/api/join/owner').send(hrBody).expect(201);
-    assert.equal((await User.findOne({ email: 'hr@example.com' })).role, 'owner');
-    // Only once: nobody else can make themselves HR.
+  it('lets a manager register and organise their own departments, with HR sign-up closed', async () => {
+    // HR cannot register for now.
     await request(app)
       .post('/api/join/owner')
-      .send({ name: 'Someone Else', email: 'else@example.com', password: 'else-pass-1234' })
-      .expect(409);
-    assert.equal((await request(app).get('/api/join/setup').expect(200)).body.ownerExists, true);
+      .send({ name: 'Neha HR', email: 'hr@example.com', password: 'hr-pass-12345' })
+      .expect(403);
+    assert.equal(await User.exists({ email: 'hr@example.com' }), null);
 
-    // A manager registers with a new department; no account until HR approves.
-    const manager = {
-      name: 'Ravi Kumar',
-      email: 'ravi@example.com',
-      department: 'Research',
-      password: 'ravi-pass-12345',
-    };
+    // A manager registers with a new department and can sign in at once.
+    const manager = { name: 'Ravi Kumar', email: 'ravi@example.com', department: 'Research', password: 'ravi-pass-12345' };
     await request(app).post('/api/join/manager').send(manager).expect(201);
     await request(app).post('/api/join/manager').send({ ...manager, email: 'r2@example.com' }).expect(409);
-    await request(app).post('/api/auth/login').send({ email: manager.email, password: manager.password }).expect(401);
-
-    const hr = request.agent(app);
-    await hr.post('/api/auth/login').send({ email: hrBody.email, password: hrBody.password }).expect(200);
-    const waiting = (await hr.get('/api/org').expect(200)).body.managerRequests;
-    assert.equal(waiting.length, 1);
-    const approved = await hr.post(`/api/org/manager-requests/${waiting[0].id}/approve`).expect(200);
-    assert.equal(approved.body.department.name, 'Research');
-    assert.equal(approved.body.person.role, 'admin');
-
-    // The manager signs in, invites the assistant manager, who joins as admin.
     const ravi = request.agent(app);
-    await ravi.post('/api/auth/login').send({ email: manager.email, password: manager.password }).expect(200);
-    const deptId = approved.body.department.id;
-    assert.equal((await ravi.get(`/api/departments/${deptId}`).expect(200)).body.you.canInviteAssistant, true);
+    const login = await ravi.post('/api/auth/login').send({ email: manager.email, password: manager.password }).expect(200);
+    assert.equal(login.body.user.position, 'manager');
+    const research = await Department.findOne({ name: 'Research' });
+    assert.equal(String(research.manager), login.body.user.id);
+
+    // An existing department cannot be claimed by registering.
+    await makeUser({ name: 'CI Person', department: 'Content Integration' });
+    await Department.create({ name: 'Content Integration' });
+    await request(app)
+      .post('/api/join/manager')
+      .send({ ...manager, email: 'r3@example.com', department: 'content integration' })
+      .expect(409);
+
+    // Organisation shows only the manager's departments and people.
+    const added = await ravi.post('/api/org/departments').send({ name: 'Data', managerName: 'Someone Else' }).expect(201);
+    assert.equal(String(added.body.department.manager), login.body.user.id);
+    assert.equal(added.body.department.managerName, 'Ravi Kumar');
+    const org = (await ravi.get('/api/org').expect(200)).body;
+    assert.deepEqual(org.departments.map((item) => item.name).sort(), ['Data', 'Research']);
+    assert.ok(!org.people.some((person) => person.name === 'CI Person'));
+    assert.deepEqual(org.managerRequests, []);
+    const ci = await Department.findOne({ name: 'Content Integration' });
+    await ravi.patch(`/api/org/departments/${ci.id}`).send({ location: 'Elsewhere' }).expect(404);
+    await ravi.delete(`/api/org/departments/${ci.id}`).expect(404);
+    await ravi.patch(`/api/org/departments/${research.id}`).send({ managerName: 'Other' }).expect(403);
+
+    // An assistant manager or employee cannot open Organisation.
+    const employee = await signIn(await makeUser({ department: 'Research' }));
+    await employee.get('/api/org').expect(403);
+
+    // The manager invites the assistant manager, who joins as admin.
     const sent = await ravi
-      .post(`/api/departments/${deptId}/assistant-invite`)
+      .post(`/api/departments/${research.id}/assistant-invite`)
       .send({ name: 'Sita Das', email: 'sita@example.com' })
       .expect(201);
     const token = sent.body.invite.link.split('/join/invite/')[1];
     await request(app).post(`/api/join/invite/${token}`).send({ name: 'Sita Das', password: 'sita-pass-12345' }).expect(201);
     const sita = await User.findOne({ email: 'sita@example.com' });
     assert.equal(sita.role, 'admin');
-    assert.equal(String(sita.reportsTo), approved.body.person.id);
-    assert.equal(String((await Department.findById(deptId)).admins[0]), sita.id);
+    assert.equal(String(sita.reportsTo), login.body.user.id);
+    const sitaAgent = request.agent(app);
+    await sitaAgent.post('/api/auth/login').send({ email: 'sita@example.com', password: 'sita-pass-12345' }).expect(200);
+    await sitaAgent.get('/api/org').expect(403);
   });
 });
 

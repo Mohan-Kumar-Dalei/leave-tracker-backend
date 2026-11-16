@@ -101,7 +101,8 @@ export async function reviewersFor(person) {
       .select('name email role');
   }
   if (!picked.length) picked = await owners();
-  if (!picked.length) picked = await User.find({ role: 'admin', isActive: true, _id: { $ne: person._id ?? person.id } }).select('name email role');
+  // Never anyone from another department: with no HR, a manager's request
+  // simply has no approver yet.
   return picked;
 }
 

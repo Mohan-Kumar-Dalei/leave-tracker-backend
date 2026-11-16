@@ -10,12 +10,13 @@ import User from '../models/User.js';
 import { arrangeTree, findInvite, syncRoles } from '../services/departments.js';
 import { createWithNextId, nextEmployeeId } from '../services/employeeIds.js';
 import { notifyUsers } from '../services/notify.js';
-import { badRequest, conflict, notFound } from '../utils/http.js';
+import { badRequest, conflict, forbidden, notFound } from '../utils/http.js';
 import { email, password, phone } from '../utils/schemas.js';
 
 // The public side of the organisation, used before anyone has an account:
-//   /setup, /owner  the company's first HR registers.
-//   /manager        a manager registers with a new department; HR approves.
+//   /setup          what the Register page offers.
+//   /manager        a manager registers with a new department and runs it
+//                   (HR registration is closed for now).
 //   /invite/:token  a manager or assistant manager accepts an invitation and
 //                   creates their account.
 //   /:code          anyone with the department's join link asks to join; the
@@ -63,33 +64,15 @@ router.get('/next-id', async (_req, res) => {
   res.json({ employeeId: await nextEmployeeId() });
 });
 
-// The company's first HR (the owner) registers. Closed once there is one, so
-// nobody else can make themselves HR.
-router.post(
-  '/owner',
-  authLimiter,
-  validate({ body: z.strictObject({ name, email, phone: phone.optional(), password }) }),
-  async (req, res) => {
-    if (await User.exists({ role: 'owner' })) {
-      throw conflict('HR is already registered. Ask HR to invite you, or register as a manager.');
-    }
-    const body = req.valid.body;
-    if (await User.exists({ email: body.email })) throw conflict('That email already has an account. Sign in instead.');
-    const user = await createWithNextId({
-      name: body.name,
-      email: body.email,
-      phone: body.phone,
-      designation: 'HR',
-      department: '',
-      role: 'owner',
-      passwordHash: await bcrypt.hash(body.password, BCRYPT_COST),
-    });
-    res.status(201).json({ email: user.email });
-  },
-);
+// HR registration is closed for now; managers set up the organisation.
+router.post('/owner', (_req, _res) => {
+  throw forbidden('HR registration is closed. Register as a manager instead.');
+});
 
-// A manager registers with the department they will run. HR approves them,
-// which creates the department; then they invite their assistant manager.
+// A manager registers with the department they will run. Their account and
+// the department are ready at once; they sign in, invite the assistant
+// manager and add more departments from Organisation. An existing department
+// cannot be claimed this way.
 router.post(
   '/manager',
   authLimiter,
@@ -109,37 +92,30 @@ router.post(
     if (await findName(body.department)) {
       throw conflict(`${body.department} already exists. Ask its assistant manager for the join link.`);
     }
-    if (
-      await JoinRequest.exists({ kind: 'manager', status: 'pending', departmentName: body.department }).collation({
-        locale: 'en',
-        strength: 2,
-      })
-    ) {
-      throw conflict(`Someone has already asked to set up ${body.department}. HR will decide.`);
-    }
 
-    const request = await JoinRequest.create({
-      kind: 'manager',
-      departmentName: body.department,
-      location: body.location ?? env.COMPANY_LOCATION,
+    const user = await createWithNextId({
       name: body.name,
       email: body.email,
-      phone: body.phone ?? '',
+      phone: body.phone || undefined,
       designation: 'Manager',
+      department: body.department,
+      role: 'admin',
       passwordHash: await bcrypt.hash(body.password, BCRYPT_COST),
     });
-    res.status(201).json({ department: request.departmentName });
-
-    const owners = await User.find({ role: 'owner', isActive: true }).select('_id');
-    await notifyUsers(
-      owners.map((owner) => owner.id),
-      {
-        kind: 'request',
-        title: `${request.name} asked to set up ${request.departmentName}`,
-        body: 'A new department and its manager are waiting for your approval.',
-        link: '/organisation',
-      },
-    );
+    try {
+      await Department.create({
+        name: body.department,
+        location: body.location || env.COMPANY_LOCATION,
+        managerName: body.name,
+        manager: user._id,
+      });
+    } catch (error) {
+      // Someone took the name at the same moment: undo the account.
+      await User.deleteOne({ _id: user._id });
+      if (error?.code === 11000) throw conflict(`${body.department} already exists.`);
+      throw error;
+    }
+    res.status(201).json({ email: user.email, department: body.department, employeeId: user.employeeId });
   },
 );
 

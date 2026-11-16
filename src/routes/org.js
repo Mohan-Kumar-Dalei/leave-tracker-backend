@@ -21,11 +21,11 @@ import { sendMail } from '../services/mail.js';
 import { approvedMail, inviteMail, inviteUrl } from '../services/orgMail.js';
 import { departmentOf, peopleIn } from '../services/scope.js';
 import { todayString } from '../utils/dates.js';
-import { badRequest, conflict, notFound } from '../utils/http.js';
+import { badRequest, conflict, forbidden, notFound } from '../utils/http.js';
 import { email, idParams, objectId, phone } from '../utils/schemas.js';
 
-// The organisation, for its owner (the company's HR or CEO), kept simple like
-// Zoho: departments, each with a manager and an assistant manager, and the
+// The organisation, kept simple like Zoho. A manager runs it for the
+// departments they manage (HR, the owner, would see every department): departments, each with a manager and an assistant manager, and the
 // employees in them. Adding a department invites its manager by mail; the
 // manager then invites the team with the department's join link. This stands
 // apart from the leave tracker for now; nothing here changes who approves leave.
@@ -38,10 +38,26 @@ const name = z.string().trim().min(2, 'Write the full name').max(80);
 const departmentName = z.string().trim().min(2, 'Use at least 2 letters').max(60, 'Keep the name under 60 letters');
 const location = z.string().trim().max(60, 'Keep the location under 60 letters').optional();
 
-async function departmentOr404(id) {
-  const department = await Department.findById(id);
+const isOwner = (user) => user.role === 'owner';
+
+// The departments a user may organise: all for the owner, else those they manage.
+const ownFilter = (user) => (isOwner(user) ? {} : { manager: user._id });
+
+async function departmentOr404(id, user) {
+  const department = await Department.findOne({ _id: id, ...ownFilter(user) });
   if (!department) throw notFound('That department was not found.');
   return department;
+}
+
+// The names of the departments a manager runs (null for the owner: all).
+async function ownNames(user) {
+  if (isOwner(user)) return null;
+  const departments = await Department.find(ownFilter(user)).select('name');
+  return departments.map((department) => department.name);
+}
+
+function ownerOnly(user) {
+  if (!isOwner(user)) throw forbidden();
 }
 
 function activeMembers(extra = {}) {
@@ -50,9 +66,9 @@ function activeMembers(extra = {}) {
     .sort({ name: 1 });
 }
 
-async function assertPerson(id) {
+async function assertPerson(id, names = null) {
   if (!id) return;
-  const found = await activeMembers({ _id: id });
+  const found = await activeMembers({ _id: id, ...peopleIn(names) });
   if (!found.length) throw badRequest('That person was not found.');
 }
 
@@ -76,17 +92,19 @@ async function invite({ department, role, name: who, email: address, designation
   return { role, name: who, email: address, link: inviteUrl(token), sent };
 }
 
-router.get('/', async (_req, res) => {
-  await syncDepartments();
+router.get('/', async (req, res) => {
+  const owner = isOwner(req.user);
+  if (owner) await syncDepartments();
+  const names = await ownNames(req.user);
   const [departments, members, invites, waiting, managerRequests] = await Promise.all([
-    Department.find({}).sort({ name: 1 }),
-    activeMembers(),
+    Department.find(ownFilter(req.user)).sort({ name: 1 }),
+    activeMembers(peopleIn(names)),
     OrgInvite.find({ acceptedAt: { $exists: false }, expiresAt: { $gt: new Date() } }),
     JoinRequest.aggregate([
       { $match: { status: 'pending', kind: { $ne: 'manager' } } },
       { $group: { _id: '$department', count: { $sum: 1 } } },
     ]),
-    JoinRequest.find({ kind: 'manager', status: 'pending' }).sort({ createdAt: 1 }),
+    owner ? JoinRequest.find({ kind: 'manager', status: 'pending' }).sort({ createdAt: 1 }) : [],
   ]);
   // An empty designation shows as the default one, as on the rest of the app.
   const people = members.map((person) => ({
@@ -102,6 +120,8 @@ router.get('/', async (_req, res) => {
 
   res.json({
     company: { name: env.COMPANY_NAME, location: env.COMPANY_LOCATION },
+    // A manager adds departments that they run themselves.
+    you: { owner, name: req.user.name },
     departments: departments.map((department) => {
       const { admins, manager, ...rest } = department.toJSON();
       return {
@@ -131,6 +151,7 @@ async function pendingManagerRequest(id) {
 // Approving sets up the department with them as its manager (an admin).
 // They then invite their assistant manager from My department.
 router.post('/manager-requests/:id/approve', validate({ params: idParams }), async (req, res) => {
+  ownerOnly(req.user);
   const request = await pendingManagerRequest(req.valid.params.id);
   if (await findByName(request.departmentName)) throw conflict(`There is already a department called ${request.departmentName}.`);
   if (await User.exists({ email: request.email })) throw conflict('Someone with that email already has an account.');
@@ -163,6 +184,7 @@ router.post('/manager-requests/:id/approve', validate({ params: idParams }), asy
 });
 
 router.post('/manager-requests/:id/reject', validate({ params: idParams }), async (req, res) => {
+  ownerOnly(req.user);
   const request = await pendingManagerRequest(req.valid.params.id);
   request.status = 'rejected';
   request.decidedBy = req.user._id;
@@ -187,14 +209,12 @@ const newDepartment = z.strictObject({
 });
 
 router.post('/departments', validate({ body: newDepartment }), async (req, res) => {
-  const {
-    name: title,
-    location: where = env.COMPANY_LOCATION,
-    managerName = '',
-    managerEmail,
-    assistantName,
-    assistantEmail,
-  } = req.valid.body;
+  const { name: title, location: where = env.COMPANY_LOCATION, assistantName, assistantEmail } = req.valid.body;
+  // A manager's new department is theirs to run; only the owner names
+  // and invites another manager.
+  const owner = isOwner(req.user);
+  const managerName = owner ? req.valid.body.managerName ?? '' : req.user.name;
+  const managerEmail = owner ? req.valid.body.managerEmail : undefined;
   if (await findByName(title)) throw conflict(`There is already a department called ${title}.`);
   if (assistantEmail && !assistantName) throw badRequest("Write the assistant manager's name.");
   if (managerEmail && !managerName) throw badRequest("Write the manager's name.");
@@ -204,7 +224,12 @@ router.post('/departments', validate({ body: newDepartment }), async (req, res) 
   if (assistantEmail) await assertNewEmail(assistantEmail);
   if (managerEmail) await assertNewEmail(managerEmail);
 
-  const department = await Department.create({ name: title, location: where, managerName });
+  const department = await Department.create({
+    name: title,
+    location: where,
+    managerName,
+    ...(owner ? {} : { manager: req.user._id }),
+  });
   const invites = [];
   if (assistantEmail) {
     invites.push(await invite({ department, role: 'assistant', name: assistantName, email: assistantEmail, designation: 'Assistant Manager', owner: req.user }));
@@ -224,8 +249,9 @@ router.post(
     body: z.strictObject({ role: z.enum(['assistant', 'manager']).default('assistant'), name, email }),
   }),
   async (req, res) => {
-    const department = await departmentOr404(req.valid.params.id);
+    const department = await departmentOr404(req.valid.params.id, req.user);
     const { role, name: who, email: address } = req.valid.body;
+    if (role === 'manager') ownerOnly(req.user);
     await assertNewEmail(address);
     const designation = role === 'manager' ? 'Manager' : 'Assistant Manager';
     if (role === 'manager') department.managerName = who;
@@ -252,8 +278,11 @@ router.patch(
       .partial(),
   }),
   async (req, res) => {
-    const department = await departmentOr404(req.valid.params.id);
+    const department = await departmentOr404(req.valid.params.id, req.user);
     const { name: title, location: where, lead, manager, managerName } = req.valid.body;
+    // Only the owner changes who manages a department.
+    if (!isOwner(req.user) && (manager !== undefined || managerName !== undefined)) throw forbidden();
+    const names = await ownNames(req.user);
     if (managerName !== undefined) department.managerName = managerName;
 
     if (title && !sameName(title, department.name)) {
@@ -263,7 +292,7 @@ router.patch(
     // People whose admin role may change: the old and new manager and AM.
     const touched = [];
     if (lead !== undefined) {
-      await assertPerson(lead);
+      await assertPerson(lead, names);
       touched.push(department.admins[0], lead);
       department.admins = lead ? [lead] : [];
     }
@@ -285,7 +314,7 @@ router.patch(
 
 // Only an empty department can go, so nobody is left without one.
 router.delete('/departments/:id', validate({ params: idParams }), async (req, res) => {
-  const department = await departmentOr404(req.valid.params.id);
+  const department = await departmentOr404(req.valid.params.id, req.user);
   const count = await User.countDocuments({ ...memberFilter, ...peopleIn([department.name]) }).collation(CASE_INSENSITIVE);
   if (count > 0) {
     throw conflict(`${department.name} still has ${count} ${count === 1 ? 'employee' : 'employees'}. Move them first.`);
@@ -311,7 +340,7 @@ const newPerson = z.strictObject({
 
 router.post('/people', validate({ body: newPerson }), async (req, res) => {
   const { department: departmentId, ...fields } = req.valid.body;
-  const department = await departmentOr404(departmentId);
+  const department = await departmentOr404(departmentId, req.user);
   if (await User.exists({ email: fields.email })) throw conflict('Someone already uses that email.');
 
   const year = todayString(env.TIMEZONE).slice(0, 4);
@@ -331,8 +360,8 @@ router.patch(
   '/people/:id',
   validate({ params: idParams, body: z.strictObject({ department: objectId }) }),
   async (req, res) => {
-    const department = await departmentOr404(req.valid.body.department);
-    const [person] = await activeMembers({ _id: req.valid.params.id });
+    const department = await departmentOr404(req.valid.body.department, req.user);
+    const [person] = await activeMembers({ _id: req.valid.params.id, ...peopleIn(await ownNames(req.user)) });
     if (!person) throw notFound('That employee was not found.');
     await User.updateOne({ _id: person._id }, { $set: { department: department.name } });
     res.json({ person: { ...person.toJSON(), department: department.name } });
