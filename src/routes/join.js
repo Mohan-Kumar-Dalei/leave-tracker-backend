@@ -69,10 +69,11 @@ router.post('/owner', (_req, _res) => {
   throw forbidden('HR registration is closed. Register as a manager instead.');
 });
 
-// A manager registers with the department they will run. Their account and
-// the department are ready at once; they sign in, invite the assistant
-// manager and add more departments from Organisation. An existing department
-// cannot be claimed this way.
+// A manager registers with the department they will run. The very first
+// manager is set up at once. After that a manager sees the whole company, so
+// a new one waits until an existing manager approves them in Organisation.
+// They may name a department that has no manager yet (like Content
+// Integration); one that already has a manager cannot be taken.
 router.post(
   '/manager',
   authLimiter,
@@ -89,8 +90,45 @@ router.post(
   async (req, res) => {
     const body = req.valid.body;
     await assertFree(body);
-    if (await findName(body.department)) {
-      throw conflict(`${body.department} already exists. Ask its assistant manager for the join link.`);
+    const existing = await findName(body.department);
+    if (existing?.manager) {
+      throw conflict(`${existing.name} already has a manager. Ask them for the join link.`);
+    }
+    const passwordHash = await bcrypt.hash(body.password, BCRYPT_COST);
+    const firstManager = !(await Department.exists({ manager: { $ne: null } }));
+
+    if (!firstManager) {
+      if (
+        await JoinRequest.exists({ kind: 'manager', status: 'pending', departmentName: body.department }).collation({
+          locale: 'en',
+          strength: 2,
+        })
+      ) {
+        throw conflict(`Someone has already asked to manage ${body.department}. A manager will decide.`);
+      }
+      const request = await JoinRequest.create({
+        kind: 'manager',
+        departmentName: existing?.name ?? body.department,
+        location: body.location ?? existing?.location ?? env.COMPANY_LOCATION,
+        name: body.name,
+        email: body.email,
+        phone: body.phone ?? '',
+        designation: 'Manager',
+        passwordHash,
+      });
+      res.status(201).json({ pending: true, department: request.departmentName });
+
+      const managers = await Department.distinct('manager', { manager: { $ne: null } });
+      await notifyUsers(
+        managers.map(String),
+        {
+          kind: 'request',
+          title: `${request.name} asked to manage ${request.departmentName}`,
+          body: 'A new manager is waiting for your approval in Organisation.',
+          link: '/organisation',
+        },
+      );
+      return;
     }
 
     const user = await createWithNextId({
@@ -98,24 +136,31 @@ router.post(
       email: body.email,
       phone: body.phone || undefined,
       designation: 'Manager',
-      department: body.department,
+      department: existing?.name ?? body.department,
       role: 'admin',
-      passwordHash: await bcrypt.hash(body.password, BCRYPT_COST),
+      passwordHash,
     });
     try {
-      await Department.create({
-        name: body.department,
-        location: body.location || env.COMPANY_LOCATION,
-        managerName: body.name,
-        manager: user._id,
-      });
+      if (existing) {
+        existing.manager = user._id;
+        existing.managerName = body.name;
+        await existing.save();
+        await arrangeTree(existing);
+      } else {
+        await Department.create({
+          name: body.department,
+          location: body.location || env.COMPANY_LOCATION,
+          managerName: body.name,
+          manager: user._id,
+        });
+      }
     } catch (error) {
       // Someone took the name at the same moment: undo the account.
       await User.deleteOne({ _id: user._id });
       if (error?.code === 11000) throw conflict(`${body.department} already exists.`);
       throw error;
     }
-    res.status(201).json({ email: user.email, department: body.department, employeeId: user.employeeId });
+    res.status(201).json({ email: user.email, department: existing?.name ?? body.department, employeeId: user.employeeId });
   },
 );
 

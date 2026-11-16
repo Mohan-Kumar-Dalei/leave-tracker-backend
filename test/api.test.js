@@ -1286,26 +1286,50 @@ describe('registering on your own', () => {
     const research = await Department.findOne({ name: 'Research' });
     assert.equal(String(research.manager), login.body.user.id);
 
-    // An existing department cannot be claimed by registering.
-    await makeUser({ name: 'CI Person', department: 'Content Integration' });
-    await Department.create({ name: 'Content Integration' });
-    await request(app)
-      .post('/api/join/manager')
-      .send({ ...manager, email: 'r3@example.com', department: 'content integration' })
-      .expect(409);
+    // Content Integration already exists, with its assistant manager and
+    // team but no manager.
+    const ciAm = await makeUser({ name: 'CI AM', role: 'admin', department: 'Content Integration' });
+    const ciPerson = await makeUser({ name: 'CI Person', department: 'Content Integration', reportsTo: ciAm.id });
+    await Department.create({ name: 'Content Integration', admins: [ciAm._id] });
 
-    // Organisation shows only the manager's departments and people.
+    // The managers see the whole company.
     const added = await ravi.post('/api/org/departments').send({ name: 'Data', managerName: 'Someone Else' }).expect(201);
     assert.equal(String(added.body.department.manager), login.body.user.id);
     assert.equal(added.body.department.managerName, 'Ravi Kumar');
-    const org = (await ravi.get('/api/org').expect(200)).body;
-    assert.deepEqual(org.departments.map((item) => item.name).sort(), ['Data', 'Research']);
-    assert.ok(!org.people.some((person) => person.name === 'CI Person'));
-    assert.deepEqual(org.managerRequests, []);
+    let org = (await ravi.get('/api/org').expect(200)).body;
+    assert.deepEqual(org.departments.map((item) => item.name).sort(), ['Content Integration', 'Data', 'Research']);
+    assert.ok(org.people.some((person) => person.name === 'CI Person'));
     const ci = await Department.findOne({ name: 'Content Integration' });
-    await ravi.patch(`/api/org/departments/${ci.id}`).send({ location: 'Elsewhere' }).expect(404);
-    await ravi.delete(`/api/org/departments/${ci.id}`).expect(404);
-    await ravi.patch(`/api/org/departments/${research.id}`).send({ managerName: 'Other' }).expect(403);
+    await ravi.delete(`/api/org/departments/${ci.id}`).expect(409); // it still has people
+
+    // A second manager waits for an existing manager. Rajesh asks to manage
+    // Content Integration; a department with a manager cannot be asked for.
+    await request(app)
+      .post('/api/join/manager')
+      .send({ ...manager, email: 'r3@example.com', department: 'Research' })
+      .expect(409);
+    const rajesh = { name: 'Rajesh Swain', email: 'rajesh@example.com', department: 'content integration', password: 'rajesh-pass-123' };
+    const asked = await request(app).post('/api/join/manager').send(rajesh).expect(201);
+    assert.equal(asked.body.pending, true);
+    await request(app).post('/api/auth/login').send({ email: rajesh.email, password: rajesh.password }).expect(401);
+    org = (await ravi.get('/api/org').expect(200)).body;
+    assert.equal(org.managerRequests.length, 1);
+    await ravi.post(`/api/org/manager-requests/${org.managerRequests[0].id}/approve`).expect(200);
+
+    // Rajesh now heads Content Integration: Rajesh, then the AM, then the team.
+    const rajeshAgent = request.agent(app);
+    const rajeshLogin = await rajeshAgent.post('/api/auth/login').send({ email: rajesh.email, password: rajesh.password }).expect(200);
+    assert.equal(rajeshLogin.body.user.position, 'manager');
+    const rajeshId = rajeshLogin.body.user.id;
+    assert.equal(String((await Department.findById(ci.id)).manager), rajeshId);
+    assert.equal(String((await User.findById(ciAm.id)).reportsTo), rajeshId);
+    assert.equal(String((await User.findById(ciPerson.id)).reportsTo), ciAm.id);
+    const team = (await rajeshAgent.get('/api/team').expect(200)).body;
+    assert.equal(team.members.find((member) => member.name === 'CI AM').reportsTo, rajeshId);
+
+    // A manager can also set who manages a department.
+    await ravi.patch(`/api/org/departments/${added.body.department.id}`).send({ manager: rajeshId }).expect(200);
+    assert.equal((await Department.findById(added.body.department.id)).managerName, 'Rajesh Swain');
 
     // An assistant manager or employee cannot open Organisation.
     const employee = await signIn(await makeUser({ department: 'Research' }));
