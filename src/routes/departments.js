@@ -32,18 +32,28 @@ const router = Router();
 
 const requestParams = z.strictObject({ id: objectId, requestId: objectId });
 
+// A manager runs the company with the other managers, so they may open every
+// department's page; an assistant manager only their own.
+const isManager = (user) => Department.exists({ manager: user._id });
+
 async function managed(req, id) {
   const department = await Department.findById(id);
   if (!department) throw notFound('That department was not found.');
-  if (!canManage(req.user, department)) throw forbidden('Only this department’s manager or assistant manager can do that.');
+  if (!canManage(req.user, department) && !(await isManager(req.user))) {
+    throw forbidden('Only this department’s manager or assistant manager can do that.');
+  }
   return department;
 }
 
-// The departments the signed-in person runs (for their menu).
+// The departments for the person's My department: every department for a
+// manager (their own first), only their own for an assistant manager.
 router.get('/mine', async (req, res) => {
   const id = req.user._id;
-  const departments = await Department.find({ $or: [{ manager: id }, { admins: id }] }).sort({ name: 1 });
-  res.json({ items: departments.map((department) => ({ id: department.id, name: department.name })) });
+  const own = await Department.find({ $or: [{ manager: id }, { admins: id }] }).sort({ name: 1 });
+  const others = (await isManager(req.user))
+    ? await Department.find({ _id: { $nin: own.map((department) => department._id) } }).sort({ name: 1 })
+    : [];
+  res.json({ items: [...own, ...others].map((department) => ({ id: department.id, name: department.name })) });
 });
 
 router.get('/:id', validate({ params: idParams }), async (req, res) => {

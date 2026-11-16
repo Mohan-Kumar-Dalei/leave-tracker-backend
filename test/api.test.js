@@ -1166,6 +1166,14 @@ describe('organisation', () => {
     await owner.patch(`/api/departments/${dept.id}/members/${amitId}`).send({ teamLead: false }).expect(409);
     assert.equal(String((await User.findById(bina.id)).reportsTo), amitId);
 
+    // A manager's My department lists every department; the AM's only theirs.
+    const other = await Department.create({ name: 'Other Team' });
+    const managerMine = (await owner.get('/api/departments/mine').expect(200)).body.items.map((item) => item.name);
+    assert.ok(managerMine.includes('Other Team') && managerMine.includes('3PP'));
+    await owner.get(`/api/departments/${other.id}`).expect(200);
+    assert.deepEqual((await sita.get('/api/departments/mine').expect(200)).body.items.map((item) => item.name), ['3PP']);
+    await sita.get(`/api/departments/${other.id}`).expect(403);
+
     // The manager chooses who the assistant manager is.
     await owner.put(`/api/departments/${dept.id}/assistant`).send({ user: amitId }).expect(200);
     assert.equal(String((await Department.findById(dept.id)).admins[0]), amitId);
