@@ -1150,19 +1150,21 @@ describe('organisation', () => {
     // reports to them.
     const amitId = approved.body.person.id;
     const bina = await makeUser({ name: 'Bina Roy', department: '3PP', reportsTo: sitaId });
-    await sita.patch(`/api/departments/${dept.id}/members/${bina.id}`).send({ reportsTo: amitId }).expect(400); // not a lead yet
+    await owner.patch(`/api/departments/${dept.id}/members/${bina.id}`).send({ reportsTo: amitId }).expect(400); // not a lead yet
     await sita.patch(`/api/departments/${dept.id}/members/${amitId}`).send({ teamLead: true }).expect(200);
+    // Only the manager decides who reports to whom.
+    await sita.patch(`/api/departments/${dept.id}/members/${bina.id}`).send({ reportsTo: amitId }).expect(403);
+    assert.equal(String((await User.findById(bina.id)).reportsTo), sitaId);
     await owner.patch(`/api/departments/${dept.id}/members/${bina.id}`).send({ reportsTo: amitId }).expect(200);
     assert.equal(String((await User.findById(bina.id)).reportsTo), amitId);
-    let members = (await sita.get(`/api/departments/${dept.id}`).expect(200)).body.members;
+    const members = (await sita.get(`/api/departments/${dept.id}`).expect(200)).body.members;
     assert.equal(members.find((person) => person.id === amitId).teamLead, true);
     await sita.patch(`/api/departments/${dept.id}/members/${sitaId}`).send({ teamLead: true }).expect(400);
     await outsider.patch(`/api/departments/${dept.id}/members/${amitId}`).send({ teamLead: false }).expect(403);
-    // No longer a lead: their team goes back to the assistant manager.
-    await sita.patch(`/api/departments/${dept.id}/members/${amitId}`).send({ teamLead: false }).expect(200);
-    assert.equal(String((await User.findById(bina.id)).reportsTo), sitaId);
-    members = (await sita.get(`/api/departments/${dept.id}`).expect(200)).body.members;
-    assert.equal(members.find((person) => person.id === amitId).teamLead, false);
+    // A team lead with a team stays one, and the tree does not change.
+    await sita.patch(`/api/departments/${dept.id}/members/${amitId}`).send({ teamLead: false }).expect(409);
+    await owner.patch(`/api/departments/${dept.id}/members/${amitId}`).send({ teamLead: false }).expect(409);
+    assert.equal(String((await User.findById(bina.id)).reportsTo), amitId);
 
     // The manager chooses who the assistant manager is.
     await owner.put(`/api/departments/${dept.id}/assistant`).send({ user: amitId }).expect(200);

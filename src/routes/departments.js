@@ -203,16 +203,18 @@ router.patch(
     const { teamLead, reportsTo } = req.valid.body;
     const boss = leadOf(department) ?? department.manager ?? null;
 
+    // The tree stays as it is: someone who already leads a team stays a team
+    // lead, and only the manager decides who reports to whom.
+    const team = await User.countDocuments({ ...inDepartment, reportsTo: person._id }).collation(CASE_INSENSITIVE);
     if (teamLead !== undefined) {
-      person.teamLead = teamLead;
-      // No longer a lead: their team goes back to the assistant manager.
-      if (!teamLead) {
-        await User.updateMany({ ...inDepartment, reportsTo: person._id }, { $set: { reportsTo: boss } }).collation(
-          CASE_INSENSITIVE,
-        );
+      if (!teamLead && team > 0) {
+        throw conflict(`${person.name} leads ${team} ${team === 1 ? 'person' : 'people'}, so they stay a team lead.`);
       }
+      person.teamLead = teamLead;
     }
     if (reportsTo !== undefined) {
+      const isManager = String(department.manager ?? '') === String(req.user._id);
+      if (!isManager && req.user.role !== 'owner') throw forbidden('Only the manager decides who reports to whom.');
       const target = reportsTo ? String(reportsTo) : null;
       if (target === person.id) throw badRequest('Someone cannot report to themselves.');
       if (target && !leaders.includes(target)) {
