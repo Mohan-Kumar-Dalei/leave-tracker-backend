@@ -25,7 +25,7 @@ import { cleanSignature, MAX_SIGNATURE_LENGTH } from '../services/signature.js';
 import { APPLICATION_SUBJECT, designationOf, signatureData } from '../services/leaveMail.js';
 import { isWeekend } from '../services/leaveDays.js';
 import { toDayString, todayString, yearRange } from '../utils/dates.js';
-import { badRequest, conflict, pageMeta, paginate, toCsv } from '../utils/http.js';
+import { badRequest, conflict, forbidden, pageMeta, paginate, toCsv } from '../utils/http.js';
 import { email as emailSchema, idParams, limit, page, phone, year } from '../utils/schemas.js';
 
 const router = Router();
@@ -363,7 +363,6 @@ router.patch(
       currentPassword: z.string().max(200).optional(),
       phone: phone.optional(),
       designation: z.string().trim().max(80).optional(),
-      department: z.string().trim().max(60).optional(),
       signatureHtml: z.string().max(100000, 'That signature is too long').optional(),
       // The app sends the signature gzipped and base64 encoded. Pasted HTML is
       // full of style attributes and often over 8 KB, which the hosting
@@ -376,8 +375,12 @@ router.patch(
     }),
   }),
   async (req, res) => {
-    const { name, email: newEmail, currentPassword, phone: phoneNumber, designation, department, signatureGzip } =
-      req.valid.body;
+    const { name, email: newEmail, currentPassword, phone: phoneNumber, designation, signatureGzip } = req.valid.body;
+    // A manager's or assistant manager's title comes with the role; it is
+    // not something to give yourself.
+    if (designation !== undefined && req.user.role !== 'admin' && /manager/i.test(designation) && designation !== req.user.designation) {
+      throw forbidden('Manager titles are given by the organisation. Ask your manager.');
+    }
     if (newEmail !== undefined && newEmail !== req.user.email) {
       const me = await User.findById(req.user._id).select('+passwordHash');
       if (!currentPassword || !(await bcrypt.compare(currentPassword, me.passwordHash ?? ''))) {
@@ -391,7 +394,6 @@ router.patch(
     if (name !== undefined) req.user.name = name;
     if (phoneNumber !== undefined) req.user.phone = phoneNumber;
     if (designation !== undefined) req.user.designation = designation;
-    if (department !== undefined) req.user.department = department;
     if (signatureHtml !== undefined) {
       const cleaned = cleanSignature(signatureHtml);
       if (cleaned.length > MAX_SIGNATURE_LENGTH) {

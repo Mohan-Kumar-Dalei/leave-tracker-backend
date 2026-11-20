@@ -24,6 +24,10 @@ export const authLimiter = limiter({
 // use up the budget that protects the sign in form.
 export const refreshLimiter = limiter({ windowMs: 15 * 60 * 1000, limit: 200 });
 
+// Registering, accepting an invitation or asking to join: each one is a
+// request a manager must look at, so successful ones count too.
+export const signupLimiter = limiter({ windowMs: 60 * 60 * 1000, limit: 10 });
+
 export const passwordMailLimiter = limiter({ windowMs: 60 * 60 * 1000, limit: 5 });
 
 export const applyLimiter = limiter({ windowMs: 60 * 60 * 1000, limit: 60 });

@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import { Router } from 'express';
 import { z } from 'zod';
 import env from '../config/env.js';
-import { authLimiter } from '../middleware/security.js';
+import { authLimiter, signupLimiter } from '../middleware/security.js';
 import { validate } from '../middleware/validate.js';
 import Department from '../models/Department.js';
 import JoinRequest from '../models/JoinRequest.js';
@@ -83,6 +83,7 @@ router.post('/owner', (_req, _res) => {
 router.post(
   '/manager',
   authLimiter,
+  signupLimiter,
   validate({
     body: z.strictObject({
       name,
@@ -187,6 +188,7 @@ router.get('/invite/:token', validate({ params: token }), async (req, res) => {
 router.post(
   '/invite/:token',
   authLimiter,
+  signupLimiter,
   validate({
     params: token,
     body: z.strictObject({ name, phone: phone.optional(), password, appPassword: z.string().max(40).optional() }),
@@ -238,6 +240,7 @@ router.get('/:code', validate({ params: code }), async (req, res) => {
 router.post(
   '/:code',
   authLimiter,
+  signupLimiter,
   validate({
     params: code,
     body: z.strictObject({

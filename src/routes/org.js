@@ -20,9 +20,9 @@ import {
 import { createWithNextId } from '../services/employeeIds.js';
 import { sendMail } from '../services/mail.js';
 import { approvedMail, inviteMail, inviteUrl } from '../services/orgMail.js';
-import { departmentOf, peopleIn } from '../services/scope.js';
+import { departmentOf, peopleIn, rankOf } from '../services/scope.js';
 import { todayString } from '../utils/dates.js';
-import { badRequest, conflict, notFound } from '../utils/http.js';
+import { badRequest, conflict, forbidden, notFound } from '../utils/http.js';
 import { email, idParams, objectId, phone } from '../utils/schemas.js';
 
 // The organisation, kept simple like Zoho. A manager runs it for the
@@ -48,6 +48,16 @@ async function departmentOr404(id) {
   const department = await Department.findById(id);
   if (!department) throw notFound('That department was not found.');
   return department;
+}
+
+// Every manager sees the whole company, but changes only the departments they
+// run, or one that has no manager yet. Another manager's department (its
+// name, its manager, its assistant manager) is theirs to change.
+function assertRuns(req, department) {
+  if (req.user.role === 'owner' || !department.manager) return;
+  if (String(department.manager) !== String(req.user._id)) {
+    throw forbidden(`Only the manager of ${department.name} can change it.`);
+  }
 }
 
 function activeMembers(extra = {}) {
@@ -132,6 +142,8 @@ router.get('/', async (req, res) => {
       const assistants = assistantsOf(department);
       return {
         ...rest,
+        // Managers change only the departments they run, or one with none.
+        canEdit: owner || !manager || String(manager) === req.user.id,
         manager: byId.get(String(manager ?? '')) ?? null,
         lead: byId.get(String(admins[0] ?? '')) ?? null,
         assistants,
@@ -294,6 +306,7 @@ router.patch(
   }),
   async (req, res) => {
     const department = await departmentOr404(req.valid.params.id);
+    assertRuns(req, department);
     const { name: title, location: where, lead, manager, managerName } = req.valid.body;
     if (managerName !== undefined) department.managerName = managerName;
 
@@ -333,6 +346,7 @@ router.patch(
 // Only an empty department can go, so nobody is left without one.
 router.delete('/departments/:id', validate({ params: idParams }), async (req, res) => {
   const department = await departmentOr404(req.valid.params.id);
+  assertRuns(req, department);
   const count = await User.countDocuments({ ...memberFilter, ...peopleIn([department.name]) }).collation(CASE_INSENSITIVE);
   if (count > 0) {
     throw conflict(`${department.name} still has ${count} ${count === 1 ? 'employee' : 'employees'}. Move them first.`);
@@ -381,6 +395,11 @@ router.patch(
     const department = await departmentOr404(req.valid.body.department);
     const [person] = await activeMembers({ _id: req.valid.params.id });
     if (!person) throw notFound('That employee was not found.');
+    // A manager stays where they are unless they move themselves.
+    const record = await User.findById(person._id).select('role designation');
+    if (person.id !== req.user.id && req.user.role !== 'owner' && (await rankOf(record)) >= 2) {
+      throw forbidden(`${person.name} is a manager; only they can change their department.`);
+    }
     await User.updateOne({ _id: person._id }, { $set: { department: department.name } });
     res.json({ person: { ...person.toJSON(), department: department.name } });
   },

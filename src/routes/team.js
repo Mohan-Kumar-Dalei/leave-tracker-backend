@@ -7,7 +7,7 @@ import LeaveType from '../models/LeaveType.js';
 import User from '../models/User.js';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
-import { getBalances } from '../services/balances.js';
+import { getBalancesForMany } from '../services/balances.js';
 import { notHidden } from '../services/hidden.js';
 import { parseDay, toDayString, todayString } from '../utils/dates.js';
 
@@ -190,20 +190,19 @@ router.get('/totals', validate({ query: totalsQuery }), async (req, res) => {
   const monthsOf = new Map(people.map((person) => [person.id, Array(12).fill(0)]));
   for (const row of [...approved, ...imported]) monthsOf.get(String(row._id.user))[row._id.month - 1] += row.days;
 
-  const figures = await Promise.all(
-    people.map(async (person) => {
-      const months = monthsOf.get(person.id);
-      const availed = months.reduce((sum, days) => sum + days, 0);
-      // What the year gives: the quota plus credits, for leave that has one.
-      const balances = (await getBalances(person.id, year)).filter(
-        (row) => row.entitled !== null && (!type || row.leaveType.id === type.id),
-      );
-      // Each type with a balance: what it gives minus what was taken of it
-      // (Leave Without Pay has no balance, so it never lowers one).
-      const balance = balances.reduce((sum, row) => sum + row.entitled - row.earlier - row.approved, 0);
-      return { person, department: departmentOfPerson(person), availed, balance, months };
-    }),
-  );
+  const balancesOf = await getBalancesForMany(ids, year);
+  const figures = people.map((person) => {
+    const months = monthsOf.get(person.id);
+    const availed = months.reduce((sum, days) => sum + days, 0);
+    // What the year gives: the quota plus credits, for leave that has one.
+    const balances = (balancesOf.get(person.id) ?? []).filter(
+      (row) => row.entitled !== null && (!type || row.leaveType.id === type.id),
+    );
+    // Each type with a balance: what it gives minus what was taken of it
+    // (Leave Without Pay has no balance, so it never lowers one).
+    const balance = balances.reduce((sum, row) => sum + row.entitled - row.earlier - row.approved, 0);
+    return { person, department: departmentOfPerson(person), availed, balance, months };
+  });
 
   const addMonths = (list) => list.reduce((sum, item) => sum.map((value, index) => value + item.months[index]), Array(12).fill(0));
   const summarise = (list) => ({

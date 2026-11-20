@@ -53,6 +53,66 @@ export async function getBalances(userId, year, { includeInactive = false } = {}
   });
 }
 
+// The same balances for many people at once, in four queries however many
+// people there are (a department's sheet would otherwise take four each).
+// Returns a Map from user id to that person's balances.
+export async function getBalancesForMany(userIds, year, { includeInactive = false } = {}) {
+  const users = userIds.map((id) => new mongoose.Types.ObjectId(String(id)));
+  const [types, usage, adjustments, imported] = await Promise.all([
+    LeaveType.find(includeInactive ? {} : { isActive: true }).sort({ order: 1, name: 1 }),
+    Leave.aggregate([
+      { $match: { user: { $in: users }, year, status: { $in: ACTIVE_STATUSES } } },
+      { $group: { _id: { user: '$user', type: '$leaveType', status: '$status' }, days: { $sum: '$days' } } },
+    ]),
+    BalanceAdjustment.aggregate([
+      { $match: { user: { $in: users }, year } },
+      { $group: { _id: { user: '$user', type: '$leaveType' }, days: { $sum: '$days' } } },
+    ]),
+    ImportedUsage.aggregate([
+      { $match: { user: { $in: users }, year } },
+      { $group: { _id: { user: '$user', type: '$leaveType' }, days: { $sum: '$days' } } },
+    ]),
+  ]);
+
+  const key = (user, type, status = '') => `${user}:${type}:${status}`;
+  const sum = (rows, withStatus) => {
+    const map = new Map();
+    for (const row of rows) map.set(key(row._id.user, row._id.type, withStatus ? row._id.status : ''), row.days);
+    return map;
+  };
+  const used = sum(usage, true);
+  const adjustedBy = sum(adjustments, false);
+  const earlierBy = sum(imported, false);
+
+  const result = new Map();
+  for (const user of users) {
+    result.set(
+      String(user),
+      types.map((type) => {
+        const adjusted = adjustedBy.get(key(user, type._id)) ?? 0;
+        const earlier = earlierBy.get(key(user, type._id)) ?? 0;
+        const approved = used.get(key(user, type._id, 'approved')) ?? 0;
+        const pending = used.get(key(user, type._id, 'pending')) ?? 0;
+        const total = type.annualQuota;
+        const entitled = total + adjusted;
+        const booked = earlier + approved + pending;
+        return {
+          leaveType: type.toJSON(),
+          total: type.tracksBalance ? total : null,
+          entitled: type.tracksBalance ? entitled : null,
+          adjusted,
+          earlier,
+          approved,
+          pending,
+          booked,
+          available: type.tracksBalance ? entitled - booked : null,
+        };
+      }),
+    );
+  }
+  return result;
+}
+
 export async function getBalance(userId, leaveTypeId, year) {
   const balances = await getBalances(userId, year, { includeInactive: true });
   return balances.find((balance) => balance.leaveType.id === String(leaveTypeId));

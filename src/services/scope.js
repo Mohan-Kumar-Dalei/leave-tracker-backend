@@ -34,6 +34,16 @@ export async function withPosition(user) {
   return { ...user.toJSON(), position: await positionOf(user) };
 }
 
+// How senior someone is, for who may change whom: the owner (HR), then a
+// manager (runs a department), then an assistant manager (an admin, or anyone
+// with that designation), then everyone else.
+export async function rankOf(user) {
+  if (user.role === 'owner') return 3;
+  if (user.role === 'admin' && (await Department.exists({ manager: user._id ?? user.id }))) return 2;
+  if (user.role === 'admin' || /assistant\s*manager/i.test(user.designation ?? '')) return 1;
+  return 0;
+}
+
 // The department of a person, as the app shows it (empty means the default).
 export const departmentOf = (person) => person?.department || env.DEFAULT_DEPARTMENT;
 

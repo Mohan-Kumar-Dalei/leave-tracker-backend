@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import env from '../config/env.js';
-import { requireAdmin } from '../middleware/auth.js';
+import { requireOrganiser } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES } from '../models/Leave.js';
@@ -12,6 +12,9 @@ import { conflict, notFound } from '../utils/http.js';
 import { day, idParams, year } from '../utils/schemas.js';
 
 const router = Router();
+
+// Leave types and the holiday list are the same for the whole company, so
+// only managers change them; everyone reads them.
 
 const leaveTypeBody = {
   name: z.string().trim().min(2).max(60),
@@ -32,7 +35,7 @@ router.get('/leave-types', async (req, res) => {
 
 router.post(
   '/leave-types',
-  requireAdmin,
+  requireOrganiser,
   validate({ body: z.strictObject(leaveTypeBody) }),
   async (req, res) => {
     const leaveType = await LeaveType.create(req.valid.body);
@@ -42,7 +45,7 @@ router.post(
 
 router.patch(
   '/leave-types/:id',
-  requireAdmin,
+  requireOrganiser,
   validate({ params: idParams, body: z.strictObject(leaveTypeBody).partial() }),
   async (req, res) => {
     const leaveType = await LeaveType.findByIdAndUpdate(req.valid.params.id, req.valid.body, {
@@ -74,7 +77,7 @@ router.get(
 
 router.post(
   '/holidays',
-  requireAdmin,
+  requireOrganiser,
   validate({ body: z.strictObject(holidayBody) }),
   async (req, res) => {
     const { date, ...rest } = req.valid.body;
@@ -85,7 +88,7 @@ router.post(
 
 router.patch(
   '/holidays/:id',
-  requireAdmin,
+  requireOrganiser,
   validate({ params: idParams, body: z.strictObject(holidayBody).partial() }),
   async (req, res) => {
     const { date, ...rest } = req.valid.body;
@@ -99,7 +102,7 @@ router.patch(
   },
 );
 
-router.delete('/holidays/:id', requireAdmin, validate({ params: idParams }), async (req, res) => {
+router.delete('/holidays/:id', requireOrganiser, validate({ params: idParams }), async (req, res) => {
   const linked = await Leave.exists({ holiday: req.valid.params.id, status: { $in: ACTIVE_STATUSES } });
   if (linked) throw conflict('Someone has availed this holiday. Cancel that leave first.');
 

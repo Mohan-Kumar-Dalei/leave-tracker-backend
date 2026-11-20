@@ -26,7 +26,7 @@ import { decisionMail, letterCore } from '../services/leaveMail.js';
 import { range } from '../services/mailTemplates.js';
 import { notHidden } from '../services/hidden.js';
 import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
-import { canReview, departmentOf, inScope, leaveOwnersIn, peopleIn, reviewersFor, scopeOf } from '../services/scope.js';
+import { canReview, departmentOf, inScope, leaveOwnersIn, peopleIn, rankOf, reviewersFor, scopeOf } from '../services/scope.js';
 import Department from '../models/Department.js';
 import { revokeAllSessions } from '../services/tokens.js';
 import { addDays, monthRange, parseDay, toDayString, todayString, yearRange } from '../utils/dates.js';
@@ -54,13 +54,28 @@ router.use(async (req, _res, next) => {
 });
 
 // Pages about one employee are only for whoever runs that employee's department.
+// Changing someone (their details, email, access, balance or recorded leave)
+// needs a place above them: an assistant manager changes the team, a manager
+// changes assistant managers and the team, and nobody changes a manager but
+// that manager. Anyone may correct their own balance. Without this an
+// assistant manager could, say, change their manager's email and then reset
+// the manager's password.
+const READ_ONLY = new Set(['GET', 'HEAD']);
 router.use('/employees/:id', async (req, _res, next) => {
-  if (!mongoose.isValidObjectId(req.params.id)) return next();
-  const person = await User.findById(req.params.id).select('department role');
-  if (person && (person.role === 'owner' || !(await inScope(req.scope, person)))) {
-    return next(notFound('That employee was not found.'));
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return next();
+    const person = await User.findById(req.params.id).select('department role designation');
+    if (person && (person.role === 'owner' || !(await inScope(req.scope, person)))) {
+      return next(notFound('That employee was not found.'));
+    }
+    if (person && !READ_ONLY.has(req.method) && person.id !== req.user.id) {
+      const [mine, theirs] = await Promise.all([rankOf(req.user), rankOf(person)]);
+      if (mine <= theirs) return next(forbidden('Only someone above this person can change them.'));
+    }
+    return next();
+  } catch (error) {
+    return next(error);
   }
-  return next();
 });
 
 const BCRYPT_COST = 12;
@@ -548,7 +563,10 @@ router.get(
         .sort({ createdAt: -1 }),
     ]);
 
-    res.json({ user, year: selectedYear, balances, monthly, adjustments, recent, recorded });
+    // Whether the viewer may change this person (see the guard above), so
+    // the page shows its buttons only when they would work.
+    const canChange = user.id === req.user.id || (await rankOf(req.user)) > (await rankOf(user));
+    res.json({ user, year: selectedYear, balances, monthly, adjustments, recent, recorded, canChange });
   },
 );
 
@@ -582,9 +600,14 @@ router.patch(
     Object.assign(target, rest);
     if (joinedOn) target.joinedOn = parseDay(joinedOn);
     await target.save();
-    if (newEmail) await AppPasswordLink.deleteOne({ user: target._id });
+    if (newEmail) {
+      // A reset link sent to the old address stops working, and they sign in
+      // again with the new one.
+      await AppPasswordLink.deleteOne({ user: target._id });
+      await User.updateOne({ _id: target._id }, { $unset: { resetTokenHash: 1, resetTokenExpires: 1 } });
+    }
 
-    if (rest.isActive === false) await revokeAllSessions(target._id);
+    if (rest.isActive === false || newEmail) await revokeAllSessions(target._id);
 
     res.json({ user: target });
   },

@@ -650,17 +650,21 @@ describe('csv export', () => {
 });
 
 describe('mail signature details', () => {
-  it('lets people edit their own name, phone, designation and department only', async () => {
-    const person = await makeUser();
+  it('lets people edit their own name, phone and designation only', async () => {
+    const person = await makeUser({ department: 'Content Integration' });
     const employee = await signIn(person);
     const { body } = await employee
       .patch('/api/me/profile')
-      .send({ name: 'New Name', phone: '+91 98765 43210', designation: 'Senior Analyst', department: 'Content' })
+      .send({ name: 'New Name', phone: '+91 98765 43210', designation: 'Senior Analyst' })
       .expect(200);
     assert.deepEqual(
       [body.user.name, body.user.phone, body.user.designation, body.user.department],
-      ['New Name', '+91 98765 43210', 'Senior Analyst', 'Content'],
+      ['New Name', '+91 98765 43210', 'Senior Analyst', 'Content Integration'],
     );
+    // Their department is changed by the people above them, and a manager's
+    // title comes with the role.
+    await employee.patch('/api/me/profile').send({ department: 'Data' }).expect(400);
+    await employee.patch('/api/me/profile').send({ designation: 'Assistant Manager' }).expect(403);
     assert.ok(body.user.createdAt, 'the joined date comes with the profile');
 
     await employee.patch('/api/me/profile').send({ phone: '<b>1</b>' }).expect(400);
@@ -1563,5 +1567,83 @@ describe('people, positions and totals', () => {
     assert.deepEqual([row.availed, row.balance, row.months[11], row.takenInMonth], [1, casual.annualQuota - 1, 1, 1]);
     assert.equal(sheet.summary.availed, 1);
     assert.equal(sheet.summary.months[11], 1);
+  });
+});
+
+describe('who may change whom', () => {
+  beforeEach(async () => {
+    await Department.init();
+    await Department.deleteMany({});
+  });
+
+  async function team(name) {
+    const manager = await makeUser({ role: 'admin', name: `${name} Manager`, department: name, designation: 'Manager' });
+    const assistant = await makeUser({ role: 'admin', name: `${name} AM`, department: name, designation: 'Assistant Manager' });
+    const member = await makeUser({ name: `${name} Member`, department: name });
+    const department = await Department.create({ name, manager: manager._id, admins: [assistant._id] });
+    return { manager, assistant, member, department };
+  }
+
+  it('lets an assistant manager change the team but never their manager', async () => {
+    const { manager, assistant, member } = await team('Sales');
+    const am = await signIn(assistant);
+    // The team: yes.
+    await am.patch(`/api/admin/employees/${member.id}`).send({ designation: 'Senior Analyst' }).expect(200);
+    // The manager: not their email (which would let them reset the password),
+    // access, role or balance.
+    await am.patch(`/api/admin/employees/${manager.id}`).send({ email: 'taken-over@example.com' }).expect(403);
+    await am.patch(`/api/admin/employees/${manager.id}`).send({ isActive: false }).expect(403);
+    await am.patch(`/api/admin/employees/${manager.id}`).send({ role: 'employee' }).expect(403);
+    await am
+      .post(`/api/admin/employees/${manager.id}/adjustments`)
+      .send({ leaveTypeId: casual.id, year: 2031, days: 5, reason: 'Extra days' })
+      .expect(403);
+    // They may still look, and correct their own balance.
+    await am.get(`/api/admin/employees/${manager.id}`).expect(200);
+    await am
+      .post(`/api/admin/employees/${assistant.id}/adjustments`)
+      .send({ leaveTypeId: casual.id, year: 2031, days: 1, reason: 'My own fix' })
+      .expect(201);
+    const fresh = await User.findById(manager.id);
+    assert.deepEqual([fresh.email, fresh.isActive, fresh.role], [manager.email, true, 'admin']);
+  });
+
+  it('ends sessions and reset links when an email is changed for someone', async () => {
+    const { manager, member } = await team('Support');
+    const boss = await signIn(manager);
+    const old = await signIn(member);
+    await User.updateOne({ _id: member._id }, { resetTokenHash: 'x'.repeat(64), resetTokenExpires: new Date(Date.now() + 60000) });
+    await boss.patch(`/api/admin/employees/${member.id}`).send({ email: 'moved@example.com' }).expect(200);
+    await old.get('/api/auth/me').expect(401);
+    const fresh = await User.findById(member.id).select('+resetTokenHash');
+    assert.equal(fresh.resetTokenHash, undefined);
+  });
+
+  it('lets a manager change only the departments they run', async () => {
+    const sales = await team('Sales');
+    const data = await team('Data');
+    const salesBoss = await signIn(sales.manager);
+    await salesBoss.get('/api/org').expect(200);
+    await salesBoss.patch(`/api/org/departments/${sales.department.id}`).send({ location: 'Pune' }).expect(200);
+    await salesBoss.patch(`/api/org/departments/${data.department.id}`).send({ manager: sales.manager.id }).expect(403);
+    await salesBoss.patch(`/api/org/departments/${data.department.id}`).send({ name: 'Mine now' }).expect(403);
+    await salesBoss.delete(`/api/org/departments/${data.department.id}`).expect(403);
+    // Another manager is not theirs to move, or to edit.
+    await salesBoss.patch(`/api/org/people/${data.manager.id}`).send({ department: sales.department.id }).expect(403);
+    await salesBoss.patch(`/api/admin/employees/${data.manager.id}`).send({ email: 'x@example.com' }).expect(403);
+    // A department with no manager yet can be taken on.
+    const empty = await Department.create({ name: 'Content Integration' });
+    await salesBoss.patch(`/api/org/departments/${empty.id}`).send({ manager: sales.manager.id }).expect(200);
+  });
+
+  it('keeps leave types and holidays for managers to change', async () => {
+    const { manager, assistant } = await team('Ops');
+    const am = await signIn(assistant);
+    await am.get('/api/leave-types').expect(200);
+    await am.patch(`/api/leave-types/${casual.id}`).send({ annualQuota: 99 }).expect(403);
+    await am.post('/api/holidays').send({ name: 'Made up', date: '2031-05-05' }).expect(403);
+    const boss = await signIn(manager);
+    const { body } = await boss.post('/api/holidays').send({ name: 'Founders Day', date: '2031-05-05' }).expect(201);
+    await boss.delete(`/api/holidays/${body.holiday.id}`).expect(204);
   });
 });
