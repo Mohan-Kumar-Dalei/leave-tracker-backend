@@ -136,6 +136,7 @@ export async function arrangeTree(department) {
       ...memberFilter,
       ...peopleIn([department.name]),
       role: 'employee',
+      designation: { $not: /assistant\s*manager/i },
       _id: { $nin: leaders },
       $or: [{ reportsTo: null }, { reportsTo: { $exists: false } }, { reportsTo: { $in: leaders } }],
     },
@@ -147,7 +148,7 @@ export async function arrangeTree(department) {
     {
       ...memberFilter,
       ...peopleIn([department.name]),
-      role: 'admin',
+      $and: [{ $or: [{ role: 'admin' }, { designation: /assistant\s*manager/i }] }],
       _id: { $nin: leaders },
       $or: [{ reportsTo: null }, { reportsTo: { $exists: false } }, ...(lead ? [{ reportsTo: lead }] : [])],
     },

@@ -1189,6 +1189,11 @@ describe('organisation', () => {
     const managerId = String((await Department.findById(dept.id)).manager);
     assert.equal(team.find((member) => member.id === amitId).reportsTo, managerId);
     assert.equal(team.find((member) => member.id === sitaId).reportsTo, managerId);
+    // Someone added as an employee with the Assistant Manager designation, and
+    // saved under another AM, still shows beside them under the manager.
+    const third = await makeUser({ name: 'Third AM', department: '3PP', designation: 'Assistant Manager', reportsTo: sitaId });
+    const again = (await owner.get('/api/team').expect(200)).body.members;
+    assert.equal(again.find((member) => member.id === third.id).reportsTo, managerId);
     // Bina reports to Amit, so her leave goes to Amit, not the first AM.
     await User.updateOne({ _id: bina.id }, { $set: { passwordHash: (await User.findById(sitaId).select('+passwordHash')).passwordHash } });
     const binaAgent = request.agent(app);

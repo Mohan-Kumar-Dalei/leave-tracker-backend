@@ -86,7 +86,10 @@ router.get('/', async (req, res) => {
   // A department may have several assistant managers. Each sits directly
   // under the department's manager, side by side, even if one was once put
   // under another.
-  const isAssistant = (member) => member.role === 'admin' && member.manages.length === 0;
+  // An assistant manager: an admin who manages no department, or anyone whose
+  // designation says Assistant Manager (some were added as employees).
+  const isAssistant = (member) =>
+    member.manages.length === 0 && (member.role === 'admin' || /assistant\s*manager/i.test(member.designation ?? ''));
   for (const member of members) {
     if (!isAssistant(member)) continue;
     const above = member.reportsTo ? byId.get(member.reportsTo) : null;
