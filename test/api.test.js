@@ -1157,11 +1157,10 @@ describe('organisation', () => {
     const bina = await makeUser({ name: 'Bina Roy', department: '3PP', reportsTo: sitaId });
     await owner.patch(`/api/departments/${dept.id}/members/${bina.id}`).send({ reportsTo: amitId }).expect(400); // not a lead yet
     await sita.patch(`/api/departments/${dept.id}/members/${amitId}`).send({ teamLead: true }).expect(200);
-    // Only the manager decides who reports to whom.
-    await sita.patch(`/api/departments/${dept.id}/members/${bina.id}`).send({ reportsTo: amitId }).expect(403);
-    assert.equal(String((await User.findById(bina.id)).reportsTo), sitaId);
-    await owner.patch(`/api/departments/${dept.id}/members/${bina.id}`).send({ reportsTo: amitId }).expect(200);
+    // The manager and each assistant manager set who their people report to.
+    await sita.patch(`/api/departments/${dept.id}/members/${bina.id}`).send({ reportsTo: amitId }).expect(200);
     assert.equal(String((await User.findById(bina.id)).reportsTo), amitId);
+    await owner.patch(`/api/departments/${dept.id}/members/${bina.id}`).send({ reportsTo: amitId }).expect(200);
     const members = (await sita.get(`/api/departments/${dept.id}`).expect(200)).body.members;
     assert.equal(members.find((person) => person.id === amitId).teamLead, true);
     await sita.patch(`/api/departments/${dept.id}/members/${sitaId}`).send({ teamLead: true }).expect(400);
@@ -1179,9 +1178,23 @@ describe('organisation', () => {
     assert.deepEqual((await sita.get('/api/departments/mine').expect(200)).body.items.map((item) => item.name), ['3PP']);
     await sita.get(`/api/departments/${other.id}`).expect(403);
 
-    // The manager chooses who the assistant manager is.
+    // The manager adds a second assistant manager: Sita stays, both sit under
+    // the manager side by side, and the second one opens their own panel.
     await owner.put(`/api/departments/${dept.id}/assistant`).send({ user: amitId }).expect(200);
-    assert.equal(String((await Department.findById(dept.id)).admins[0]), amitId);
+    const admins = (await Department.findById(dept.id)).admins.map(String);
+    assert.deepEqual(admins, [sitaId, amitId]);
+    assert.equal((await User.findById(sitaId)).role, 'admin');
+    assert.equal((await User.findById(amitId)).role, 'admin');
+    const team = (await owner.get('/api/team').expect(200)).body.members;
+    const managerId = String((await Department.findById(dept.id)).manager);
+    assert.equal(team.find((member) => member.id === amitId).reportsTo, managerId);
+    assert.equal(team.find((member) => member.id === sitaId).reportsTo, managerId);
+    // Bina reports to Amit, so her leave goes to Amit, not the first AM.
+    await User.updateOne({ _id: bina.id }, { $set: { passwordHash: (await User.findById(sitaId).select('+passwordHash')).passwordHash } });
+    const binaAgent = request.agent(app);
+    await binaAgent.post('/api/auth/login').send({ email: bina.email, password: sitaPassword }).expect(200);
+    const to = (await binaAgent.get('/api/me/compose').expect(200)).body.to.map((item) => item.name);
+    assert.deepEqual(to, [approved.body.person.name]);
   });
 });
 

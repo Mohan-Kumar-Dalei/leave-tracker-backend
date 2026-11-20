@@ -77,7 +77,10 @@ export const leadOf = (department) => department.admins?.[0] ?? null;
 export function canManage(user, department) {
   if (user.role === 'owner') return true;
   const id = String(user._id ?? user.id);
-  return String(department.manager ?? '') === id || (department.admins ?? []).some((admin) => String(admin) === id);
+  if (String(department.manager ?? '') === id || (department.admins ?? []).some((admin) => String(admin) === id)) return true;
+  // Another assistant manager of the same department (an admin who is in it).
+  const own = (user.department || env.DEFAULT_DEPARTMENT).toLowerCase();
+  return user.role === 'admin' && own === department.name.toLowerCase();
 }
 
 // A fresh one-time invitation for the manager or assistant manager. An older
@@ -132,9 +135,22 @@ export async function arrangeTree(department) {
     {
       ...memberFilter,
       ...peopleIn([department.name]),
+      role: 'employee',
       _id: { $nin: leaders },
       $or: [{ reportsTo: null }, { reportsTo: { $exists: false } }, { reportsTo: { $in: leaders } }],
     },
     { $set: { reportsTo: boss } },
+  ).collation(CASE_INSENSITIVE);
+  // A department can have more than one assistant manager: the others sit
+  // beside this one, under the manager, never under each other.
+  await User.updateMany(
+    {
+      ...memberFilter,
+      ...peopleIn([department.name]),
+      role: 'admin',
+      _id: { $nin: leaders },
+      $or: [{ reportsTo: null }, { reportsTo: { $exists: false } }, ...(lead ? [{ reportsTo: lead }] : [])],
+    },
+    { $set: { reportsTo: top ?? null } },
   ).collation(CASE_INSENSITIVE);
 }

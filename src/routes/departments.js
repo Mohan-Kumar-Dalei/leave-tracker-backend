@@ -50,7 +50,11 @@ async function managed(req, id) {
 // manager (their own first), only their own for an assistant manager.
 router.get('/mine', async (req, res) => {
   const id = req.user._id;
-  const own = await Department.find({ $or: [{ manager: id }, { admins: id }] }).sort({ name: 1 });
+  // Their own department too, for an assistant manager who is not its first AM.
+  const mine = req.user.role === 'admin' ? [{ name: req.user.department || env.DEFAULT_DEPARTMENT }] : [];
+  const own = await Department.find({ $or: [{ manager: id }, { admins: id }, ...mine] })
+    .collation(CASE_INSENSITIVE)
+    .sort({ name: 1 });
   const others = (await isManager(req.user))
     ? await Department.find({ _id: { $nin: own.map((department) => department._id) } }).sort({ name: 1 })
     : [];
@@ -62,7 +66,7 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
   const [members, requests, code] = await Promise.all([
     User.find({ ...memberFilter, isActive: true, ...peopleIn([department.name]) })
       .collation(CASE_INSENSITIVE)
-      .select('name employeeId email designation avatarUrl reportsTo teamLead leaveReportTo')
+      .select('name employeeId email designation avatarUrl reportsTo teamLead leaveReportTo role')
       .sort({ name: 1 }),
     JoinRequest.find({ department: department._id, status: 'pending' }).sort({ createdAt: 1 }),
     joinCodeOf(department),
@@ -92,7 +96,12 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
     members: members.map((person) => ({
       ...person.toJSON(),
       designation: person.designation || env.DEFAULT_DESIGNATION,
-      place: String(person._id) === manager ? 'manager' : String(person._id) === lead ? 'assistant' : 'member',
+      place:
+        String(person._id) === manager
+          ? 'manager'
+          : String(person._id) === lead || person.role === 'admin'
+            ? 'assistant'
+            : 'member',
       teamLead: Boolean(person.teamLead) || reportedTo.has(person.id),
       reportsTo: person.reportsTo ? String(person.reportsTo) : null,
       leaveReportTo: person.leaveReportTo ? String(person.leaveReportTo) : null,
@@ -229,7 +238,9 @@ router.patch(
     const inDepartment = { ...memberFilter, isActive: true, ...peopleIn([department.name]) };
     const person = await User.findOne({ _id: req.valid.params.userId, ...inDepartment }).collation(CASE_INSENSITIVE);
     if (!person) throw notFound(`That person is not in ${department.name}.`);
-    const leaders = [department.manager, leadOf(department)].filter(Boolean).map(String);
+    // The manager and every assistant manager (an admin in the department).
+    const assistants = await User.find({ ...inDepartment, role: 'admin' }).collation(CASE_INSENSITIVE).select('_id');
+    const leaders = [department.manager, leadOf(department), ...assistants.map((one) => one._id)].filter(Boolean).map(String);
     if (leaders.includes(person.id)) throw badRequest('The manager and the assistant manager are already above the team.');
     const { teamLead, reportsTo, leaveReportTo } = req.valid.body;
     // Only the manager chooses which assistant manager gets someone's leave.
@@ -255,8 +266,6 @@ router.patch(
       person.teamLead = teamLead;
     }
     if (reportsTo !== undefined) {
-      const isManager = String(department.manager ?? '') === String(req.user._id);
-      if (!isManager && req.user.role !== 'owner') throw forbidden('Only the manager decides who reports to whom.');
       const target = reportsTo ? String(reportsTo) : null;
       if (target === person.id) throw badRequest('Someone cannot report to themselves.');
       if (target && !leaders.includes(target)) {
@@ -294,10 +303,14 @@ router.put(
         await person.save();
       }
     }
-    const previous = department.admins[0];
-    department.admins = chosen ? [chosen] : [];
+    // A department can have more than one assistant manager: choosing one
+    // adds them beside any already there (the first stays the default for
+    // leave), it does not replace them.
+    if (chosen && !department.admins.some((admin) => String(admin) === String(chosen))) {
+      department.admins = [...department.admins, chosen];
+    }
     await department.save();
-    await syncRoles([previous, chosen]);
+    await syncRoles([chosen]);
     await arrangeTree(department);
     res.json({ ok: true });
 

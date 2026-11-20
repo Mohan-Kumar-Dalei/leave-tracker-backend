@@ -83,6 +83,18 @@ router.get('/', async (req, res) => {
     if (manager && !manager.manages.includes(department.name)) manager.manages.push(department.name);
   }
 
+  // A department may have several assistant managers. Each sits directly
+  // under the department's manager, side by side, even if one was once put
+  // under another.
+  const isAssistant = (member) => member.role === 'admin' && member.manages.length === 0;
+  for (const member of members) {
+    if (!isAssistant(member)) continue;
+    const above = member.reportsTo ? byId.get(member.reportsTo) : null;
+    if (above && isAssistant(above) && above.department.toLowerCase() === member.department.toLowerCase()) {
+      member.reportsTo = heads.get(member.department.toLowerCase())?.manager?.id ?? null;
+    }
+  }
+
   // Who heads the tree: HR at the top, then each department's manager, its
   // assistant manager, and the team. Only people with no one above them are
   // placed; links already set are kept.
@@ -93,7 +105,7 @@ router.get('/', async (req, res) => {
     const managedHere = member.manages.length > 0;
     const above = managedHere
       ? hr
-      : member.id === head.assistant?.id
+      : member.id === head.assistant?.id || isAssistant(member)
         ? head.manager ?? hr
         : head.assistant ?? head.manager ?? hr;
     if (above && above.id !== member.id) member.reportsTo = above.id;

@@ -100,6 +100,22 @@ export async function reviewersFor(person) {
     const picked = await active([chosen]);
     if (picked.length) return picked;
   }
+  // An employee's leave goes to the assistant manager they sit under in the
+  // tree (directly or through a team lead), when the department has several.
+  if (person.role !== 'admin' && person.role !== 'owner') {
+    let step = await User.findById(id(person)).select('reportsTo');
+    for (let hop = 0; step?.reportsTo && hop < 10; hop += 1) {
+      const above = await User.findOne({ _id: step.reportsTo, isActive: true }).select('role department reportsTo');
+      if (!above) break;
+      const sameDepartment = departmentOf(above).toLowerCase() === departmentOf(person).toLowerCase();
+      if (above.role === 'admin' && sameDepartment && id(above) !== id(department?.manager)) {
+        const picked = await active([above._id]);
+        if (picked.length) return picked;
+        break;
+      }
+      step = above;
+    }
+  }
   // HR is turned off for now, so nobody above a manager gets requests.
   const owners = async () => [];
 
