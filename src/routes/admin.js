@@ -142,8 +142,9 @@ router.get('/overview', async (req, res) => {
     today: todayValue,
     pendingCount,
     pending: await withRouting(pendingItems),
-    awayToday,
-    nextUp,
+    // Which department each person on leave is from.
+    awayToday: awayToday.map((leave) => ({ ...leave.toJSON(), department: departmentOf(leave.user) })),
+    nextUp: nextUp.map((leave) => ({ ...leave.toJSON(), department: departmentOf(leave.user) })),
     employees,
     approvedDaysThisMonth: (approvedThisMonth[0]?.days ?? 0) + earlierThisMonth,
     byType: [...usage.values()].sort((a, b) => a.order - b.order),

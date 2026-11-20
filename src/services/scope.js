@@ -41,6 +41,9 @@ export const departmentOf = (person) => person?.department || env.DEFAULT_DEPART
 export async function scopeOf(user) {
   if (user.role === 'owner') return null;
   if (user.role !== 'admin') return [departmentOf(user)];
+  // With HR off, a manager looks after the whole company: every department's
+  // people and leave, like Rajesh Sir over Content Integration and the rest.
+  if (await Department.exists({ manager: user._id })) return null;
   const departments = await Department.find({ $or: [{ manager: user._id }, { admins: user._id }] }).select('name');
   return departments.length ? departments.map((department) => department.name) : [departmentOf(user)];
 }
