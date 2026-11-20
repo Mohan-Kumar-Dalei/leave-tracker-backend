@@ -55,6 +55,37 @@ export async function saveAppPassword(userId, email, password) {
   );
 }
 
+// For a join request: kept sealed until the person is approved.
+export const sealAppPassword = (password) => seal(normalisePassword(password));
+
+export async function saveSealedAppPassword(userId, email, sealed) {
+  return AppPasswordLink.findOneAndUpdate(
+    { user: userId },
+    { email, password: sealed, connectedAt: new Date(), $unset: { brokenAt: 1, brokenReason: 1 } },
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
+  );
+}
+
+// The first step for anyone invited by mail: their Gmail App Password, checked
+// with Google for that exact address, so their leave mails go from their own
+// Gmail from day one. Required whenever the server can keep App Passwords.
+export async function requireInvitedAppPassword(email, appPassword, problem) {
+  if (!appPasswordAvailable()) return null;
+  if (!appPassword) throw problem('Add your Gmail App Password first (step 1).');
+  if (!looksLikeAppPassword(appPassword)) {
+    throw problem('An App Password is 16 letters, shown by Google in four groups of four.');
+  }
+  const check = await checkAppPassword(email, appPassword);
+  if (!check.ok) {
+    throw problem(
+      check.rejected
+        ? `Google did not accept that App Password for ${email}. Make one for this exact Gmail and try again.`
+        : 'Could not reach Gmail to check it. Please try again in a minute.',
+    );
+  }
+  return normalisePassword(appPassword);
+}
+
 export async function activeAppPasswordFor(userId) {
   if (!appPasswordAvailable() || !userId) return null;
   return AppPasswordLink.findOne({ user: userId, brokenAt: { $exists: false } }).select('+password');

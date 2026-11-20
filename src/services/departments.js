@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import env from '../config/env.js';
-import Department from '../models/Department.js';
+import Department, { refreshPositions } from '../models/Department.js';
 import OrgInvite from '../models/OrgInvite.js';
 import User from '../models/User.js';
 import { peopleIn } from './scope.js';
@@ -51,6 +51,7 @@ export async function syncDepartments() {
   const leaders = await Department.find({}).select('manager admins');
   const ids = leaders.flatMap((department) => [department.manager, ...department.admins]).filter(Boolean);
   if (ids.length) await User.updateMany({ _id: { $in: ids }, role: 'employee' }, { $set: { role: 'admin' } });
+  await refreshPositions();
 }
 
 // Managers and assistant managers have the admin role; someone who no longer

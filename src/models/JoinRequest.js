@@ -22,6 +22,8 @@ const joinRequestSchema = new mongoose.Schema(
     designation: { type: String, trim: true, maxlength: 80, default: '' },
     // Cleared once the request is decided: the account has it, or nobody needs it.
     passwordHash: { type: String, select: false },
+    // Their Gmail App Password, sealed, until approval moves it to their account.
+    appPassword: { type: String, select: false },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },
     decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     decidedAt: { type: Date },
@@ -36,6 +38,7 @@ joinRequestSchema.set('toJSON', {
     ret.id = String(ret._id);
     delete ret._id;
     delete ret.passwordHash;
+    delete ret.appPassword;
     return ret;
   },
 });

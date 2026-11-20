@@ -55,11 +55,23 @@ export function peopleIn(scope) {
   return { department: { $in: names } };
 }
 
-// A Leave/ImportedUsage `user` condition for the people in a scope.
-export async function leaveOwnersIn(scope) {
+// A Leave/ImportedUsage `user` condition for the people in a scope, plus
+// (with `viewer`) anyone whose leave the manager sent to the viewer.
+export async function leaveOwnersIn(scope, viewer = null) {
   if (!scope) return { $nin: await hiddenUserIds() };
-  const people = await User.find({ ...peopleIn(scope), ...notHidden }).collation(CASE_INSENSITIVE).select('_id');
+  const people = await User.find({
+    ...notHidden,
+    $or: [peopleIn(scope), ...(viewer ? [{ leaveReportTo: viewer._id ?? viewer.id }] : [])],
+  })
+    .collation(CASE_INSENSITIVE)
+    .select('_id');
   return { $in: people.map((person) => person._id) };
+}
+
+// The assistant manager the manager chose for someone's leave, if any.
+async function chosenReviewer(person) {
+  const record = await User.findById(id(person)).select('leaveReportTo');
+  return record?.leaveReportTo ? String(record.leaveReportTo) : null;
 }
 
 export async function inScope(scope, person) {
@@ -82,6 +94,12 @@ export async function reviewersFor(person) {
   const department = await departmentRecord(person);
   const active = (ids) =>
     User.find({ _id: { $in: ids.filter(Boolean) }, isActive: true }).select('name email role designation phone signatureHtml');
+  // The manager may have chosen who gets this person's leave.
+  const chosen = await chosenReviewer(person);
+  if (chosen && chosen !== id(person)) {
+    const picked = await active([chosen]);
+    if (picked.length) return picked;
+  }
   // HR is turned off for now, so nobody above a manager gets requests.
   const owners = async () => [];
 
@@ -118,6 +136,7 @@ export async function canReview(reviewer, person) {
   if (id(reviewer) === id(person)) return false;
   if (reviewer.role === 'owner') return true;
   if (reviewer.role !== 'admin') return false;
+  if ((await chosenReviewer(person)) === id(reviewer)) return true;
   if (!(await inScope(await scopeOf(reviewer), person))) return false;
   const department = await departmentRecord(person);
   if (department && id(department.manager) === id(person)) return false; // only the owner decides a manager's leave

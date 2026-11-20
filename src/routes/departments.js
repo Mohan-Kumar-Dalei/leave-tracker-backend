@@ -17,6 +17,7 @@ import {
   reportsToFor,
   syncRoles,
 } from '../services/departments.js';
+import { saveSealedAppPassword } from '../services/appPassword.js';
 import { createWithNextId } from '../services/employeeIds.js';
 import { sendMail } from '../services/mail.js';
 import { notifyUsers } from '../services/notify.js';
@@ -61,7 +62,7 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
   const [members, requests, code] = await Promise.all([
     User.find({ ...memberFilter, isActive: true, ...peopleIn([department.name]) })
       .collation(CASE_INSENSITIVE)
-      .select('name employeeId email designation avatarUrl reportsTo teamLead')
+      .select('name employeeId email designation avatarUrl reportsTo teamLead leaveReportTo')
       .sort({ name: 1 }),
     JoinRequest.find({ department: department._id, status: 'pending' }).sort({ createdAt: 1 }),
     joinCodeOf(department),
@@ -94,7 +95,10 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
       place: String(person._id) === manager ? 'manager' : String(person._id) === lead ? 'assistant' : 'member',
       teamLead: Boolean(person.teamLead) || reportedTo.has(person.id),
       reportsTo: person.reportsTo ? String(person.reportsTo) : null,
+      leaveReportTo: person.leaveReportTo ? String(person.leaveReportTo) : null,
     })),
+    // Who leave can be sent to: every department's assistant manager.
+    assistants: await assistantChoices(),
     requests,
   });
 });
@@ -149,7 +153,7 @@ router.post(
 );
 
 async function pendingRequest(department, requestId) {
-  const request = await JoinRequest.findOne({ _id: requestId, department: department._id }).select('+passwordHash');
+  const request = await JoinRequest.findOne({ _id: requestId, department: department._id }).select('+passwordHash +appPassword');
   if (!request) throw notFound('That request was not found.');
   if (request.status !== 'pending') throw conflict(`This request is already ${request.status}.`);
   return request;
@@ -171,11 +175,14 @@ router.post('/:id/requests/:requestId/approve', validate({ params: requestParams
     reportsTo: reportsToFor(department),
     passwordHash: request.passwordHash,
   });
+  // The Gmail App Password from step 1 goes to their account.
+  if (request.appPassword) await saveSealedAppPassword(user.id, user.email, request.appPassword);
   request.status = 'approved';
   request.decidedBy = req.user._id;
   request.decidedAt = new Date();
   request.user = user._id;
   request.passwordHash = undefined;
+  request.appPassword = undefined;
   await request.save();
 
   res.json({ person: user });
@@ -189,6 +196,7 @@ router.post('/:id/requests/:requestId/reject', validate({ params: requestParams 
   request.decidedBy = req.user._id;
   request.decidedAt = new Date();
   request.passwordHash = undefined;
+  request.appPassword = undefined;
   await request.save();
   res.status(204).end();
 });
@@ -197,11 +205,24 @@ router.post('/:id/requests/:requestId/reject', validate({ params: requestParams 
 // team lead (or not), and picks who each person reports to: the assistant
 // manager, the manager, or one of the team leads.
 const memberParams = z.strictObject({ id: objectId, userId: objectId });
+
+// Every department's assistant manager, with the department, for the
+// "Leave goes to" choice.
+async function assistantChoices() {
+  const departments = await Department.find({ 'admins.0': { $exists: true } }).select('name admins').sort({ name: 1 });
+  const people = await User.find({ _id: { $in: departments.map((department) => department.admins[0]) }, isActive: true }).select(
+    'name',
+  );
+  const byId = new Map(people.map((person) => [person.id, person.name]));
+  return departments
+    .filter((department) => byId.has(String(department.admins[0])))
+    .map((department) => ({ id: String(department.admins[0]), name: byId.get(String(department.admins[0])), department: department.name }));
+}
 router.patch(
   '/:id/members/:userId',
   validate({
     params: memberParams,
-    body: z.strictObject({ teamLead: z.boolean(), reportsTo: objectId.nullable() }).partial(),
+    body: z.strictObject({ teamLead: z.boolean(), reportsTo: objectId.nullable(), leaveReportTo: objectId.nullable() }).partial(),
   }),
   async (req, res) => {
     const department = await managed(req, req.valid.params.id);
@@ -210,7 +231,18 @@ router.patch(
     if (!person) throw notFound(`That person is not in ${department.name}.`);
     const leaders = [department.manager, leadOf(department)].filter(Boolean).map(String);
     if (leaders.includes(person.id)) throw badRequest('The manager and the assistant manager are already above the team.');
-    const { teamLead, reportsTo } = req.valid.body;
+    const { teamLead, reportsTo, leaveReportTo } = req.valid.body;
+    // Only the manager chooses which assistant manager gets someone's leave.
+    if (leaveReportTo !== undefined) {
+      const isManagerHere = String(department.manager ?? '') === String(req.user._id);
+      if (!isManagerHere && req.user.role !== 'owner') throw forbidden('Only the manager chooses who gets leave requests.');
+      if (leaveReportTo) {
+        const choices = (await assistantChoices()).map((choice) => choice.id);
+        if (!choices.includes(String(leaveReportTo))) throw badRequest('Pick one of the assistant managers.');
+        if (String(leaveReportTo) === person.id) throw badRequest('Someone cannot approve their own leave.');
+      }
+      person.leaveReportTo = leaveReportTo ?? null;
+    }
     const boss = leadOf(department) ?? department.manager ?? null;
 
     // The tree stays as it is: someone who already leads a team stays a team

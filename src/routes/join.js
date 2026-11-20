@@ -8,6 +8,12 @@ import Department from '../models/Department.js';
 import JoinRequest from '../models/JoinRequest.js';
 import User from '../models/User.js';
 import { arrangeTree, findInvite, syncRoles } from '../services/departments.js';
+import {
+  appPasswordAvailable,
+  requireInvitedAppPassword,
+  saveAppPassword,
+  sealAppPassword,
+} from '../services/appPassword.js';
 import { createWithNextId, nextEmployeeId } from '../services/employeeIds.js';
 import { notifyUsers } from '../services/notify.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http.js';
@@ -173,17 +179,23 @@ router.get('/invite/:token', validate({ params: token }), async (req, res) => {
     roleName: ROLE_NAME[invite.role],
     name: invite.name,
     email: invite.email,
+    // Step 1 asks for the Gmail App Password when the server keeps them.
+    appPassword: appPasswordAvailable(),
   });
 });
 
 router.post(
   '/invite/:token',
   authLimiter,
-  validate({ params: token, body: z.strictObject({ name, phone: phone.optional(), password }) }),
+  validate({
+    params: token,
+    body: z.strictObject({ name, phone: phone.optional(), password, appPassword: z.string().max(40).optional() }),
+  }),
   async (req, res) => {
     const { invite, department } = await openInvite(req.valid.params.token);
     const body = req.valid.body;
     await assertFree({ email: invite.email });
+    const appPassword = await requireInvitedAppPassword(invite.email, body.appPassword, badRequest);
 
     const user = await createWithNextId({
       name: body.name,
@@ -206,6 +218,7 @@ router.post(
     invite.user = user._id;
     await invite.save();
     await arrangeTree(department);
+    if (appPassword) await saveAppPassword(user.id, user.email, appPassword);
 
     res.status(201).json({ email: user.email, department: department.name, role: ROLE_NAME[invite.role] });
   },
@@ -214,7 +227,12 @@ router.post(
 router.get('/:code', validate({ params: code }), async (req, res) => {
   const department = await Department.findOne({ joinCode: req.valid.params.code });
   if (!department) throw notFound('This join link is not valid. Ask your manager for the current one.');
-  res.json({ company: env.COMPANY_NAME, department: department.name, location: department.location });
+  res.json({
+    company: env.COMPANY_NAME,
+    department: department.name,
+    location: department.location,
+    appPassword: appPasswordAvailable(),
+  });
 });
 
 router.post(
@@ -228,6 +246,7 @@ router.post(
       phone: phone.optional(),
       designation: z.string().trim().max(80).optional(),
       password,
+      appPassword: z.string().max(40).optional(),
     }),
   }),
   async (req, res) => {
@@ -236,8 +255,10 @@ router.post(
     const body = req.valid.body;
     if (!body.password.trim()) throw badRequest('Choose a password.');
     await assertFree(body);
+    const appPassword = await requireInvitedAppPassword(body.email, body.appPassword, badRequest);
 
     const request = await JoinRequest.create({
+      ...(appPassword ? { appPassword: sealAppPassword(appPassword) } : {}),
       department: department._id,
       name: body.name,
       email: body.email,

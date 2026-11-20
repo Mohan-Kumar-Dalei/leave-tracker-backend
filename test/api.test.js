@@ -428,14 +428,19 @@ describe('review flow', () => {
     await agent.post(`/api/admin/employees/${person.id}/invite`).expect(404);
   });
 
-  it('leaves admins out of the employee list', async () => {
+  it('lists the admin too, so they can open and correct their own balance', async () => {
     const admin = await makeUser({ role: 'admin', name: 'Head Admin' });
     await makeUser({ name: 'Regular Person' });
     const agent = await signIn(admin);
 
     const { body } = await agent.get('/api/admin/employees?status=all').expect(200);
-    assert.deepEqual(body.items.map((user) => user.name), ['Regular Person']);
-    assert.equal(body.total, 1);
+    assert.deepEqual(body.items.map((user) => user.name).sort(), ['Head Admin', 'Regular Person']);
+    assert.equal(body.total, 2);
+    // Their own balance, like anyone's.
+    await agent
+      .post(`/api/admin/employees/${admin.id}/adjustments`)
+      .send({ leaveTypeId: casual.id, year: new Date().getFullYear(), days: 1, reason: 'Carried over' })
+      .expect(201);
   });
 
   it('keeps one active admin', async () => {
@@ -1258,7 +1263,7 @@ describe('leave inside the organisation', () => {
 
     // Employees and their pages stay within the department.
     const names = async (agent) => (await agent.get('/api/admin/employees').expect(200)).body.items.map((item) => item.name);
-    assert.deepEqual((await names(sita)).sort(), ['Amit Rout', 'Ravi Kumar']);
+    assert.deepEqual((await names(sita)).sort(), ['Amit Rout', 'Ravi Kumar', 'Sita Das']);
     assert.ok(!(await names(oldAdmin)).includes('Amit Rout'));
     assert.ok((await names(oldAdmin)).includes('CI Person'));
     await oldAdmin.get(`/api/admin/employees/${added.body.person.id}`).expect(404);
@@ -1395,5 +1400,76 @@ describe('the department on the dashboard', () => {
     assert.deepEqual(team.map((entry) => entry.title), ['Colleague One']);
     assert.equal(team[0].status, 'pending');
     assert.ok(!JSON.stringify(team).includes('Private reason'));
+  });
+});
+
+describe('people, positions and totals', () => {
+  beforeEach(async () => {
+    await Department.init();
+    await Department.deleteMany({});
+  });
+
+  it('lets people change their own email with their password, and admins change anyone\'s', async () => {
+    const person = await makeUser({ name: 'Mail Person', email: 'old.mail@example.com' });
+    const agent = await signIn(person);
+    await agent.patch('/api/me/profile').send({ email: 'new.mail@example.com' }).expect(400);
+    await agent.patch('/api/me/profile').send({ email: 'new.mail@example.com', currentPassword: 'wrong-pass' }).expect(400);
+    const taken = await makeUser({ email: 'taken@example.com' });
+    await agent.patch('/api/me/profile').send({ email: taken.email, currentPassword: PASSWORD }).expect(409);
+    await agent.patch('/api/me/profile').send({ email: 'new.mail@example.com', currentPassword: PASSWORD }).expect(200);
+    await request(app).post('/api/auth/login').send({ email: 'new.mail@example.com', password: PASSWORD }).expect(200);
+
+    const admin = await signIn(await makeUser({ role: 'admin' }));
+    await admin.patch(`/api/admin/employees/${person.id}`).send({ email: taken.email }).expect(409);
+    await admin.patch(`/api/admin/employees/${person.id}`).send({ email: 'third.mail@example.com' }).expect(200);
+    assert.equal((await User.findById(person.id)).email, 'third.mail@example.com');
+  });
+
+  it('sends leave to the assistant manager the manager chose, and saves everyone\'s position', async () => {
+    const manager = await makeUser({ role: 'admin', name: 'Big Manager', department: 'Sales' });
+    const salesAm = await makeUser({ role: 'admin', name: 'Sales AM', department: 'Sales' });
+    const dataAm = await makeUser({ role: 'admin', name: 'Data AM', department: 'Data' });
+    const seller = await makeUser({ name: 'Seller', department: 'Sales' });
+    const sales = await Department.create({ name: 'Sales', manager: manager._id, admins: [salesAm._id] });
+    await Department.create({ name: 'Data', admins: [dataAm._id] });
+
+    // Positions are saved on the users for reading the database.
+    const position = async (user) => (await User.findById(user.id)).position;
+    assert.deepEqual(
+      [await position(manager), await position(salesAm), await position(dataAm), await position(seller)],
+      ['manager', 'assistantmanager', 'assistantmanager', 'employee'],
+    );
+
+    const boss = await signIn(manager);
+    const page = (await boss.get(`/api/departments/${sales.id}`).expect(200)).body;
+    assert.deepEqual(page.assistants.map((item) => item.name).sort(), ['Data AM', 'Sales AM']);
+    const am = await signIn(salesAm);
+    await am.patch(`/api/departments/${sales.id}/members/${seller.id}`).send({ leaveReportTo: dataAm.id }).expect(403);
+    await boss.patch(`/api/departments/${sales.id}/members/${seller.id}`).send({ leaveReportTo: seller.id }).expect(400);
+    await boss.patch(`/api/departments/${sales.id}/members/${seller.id}`).send({ leaveReportTo: dataAm.id }).expect(200);
+
+    // The seller's leave now goes to the Data AM, who sees and decides it.
+    const sellerAgent = await signIn(seller);
+    const to = (await sellerAgent.get('/api/me/compose').expect(200)).body.to.map((item) => item.email);
+    assert.deepEqual(to, [dataAm.email]);
+    const leave = (await apply(sellerAgent, { from: '2031-03-03', to: '2031-03-03' }).expect(201)).body.leave;
+    const dataAgent = await signIn(dataAm);
+    const pending = (await dataAgent.get('/api/admin/leaves?status=pending').expect(200)).body.items.map((item) => item.id);
+    assert.deepEqual(pending, [leave.id]);
+    await dataAgent.patch(`/api/admin/leaves/${leave.id}/review`).send({ decision: 'approved' }).expect(200);
+    const team = (await sellerAgent.get('/api/team').expect(200)).body.members;
+    assert.equal(team.find((member) => member.name === 'Seller').leaveReportTo, dataAm.id);
+  });
+
+  it('shows everyone the leave totals by department', async () => {
+    await makeUser({ name: 'Total One', department: 'Sales' });
+    await makeUser({ name: 'Total Two', department: 'Sales' });
+    const someone = await signIn(await makeUser({ name: 'Total Three', department: 'Data' }));
+    const { body } = await someone.get('/api/team/totals').expect(200);
+    const sales = body.departments.find((row) => row.name === 'Sales');
+    assert.equal(sales.people, 2);
+    assert.ok(sales.available > 0);
+    assert.equal(body.company.people, body.departments.reduce((sum, row) => sum + row.people, 0));
+    assert.ok(!JSON.stringify(body).includes('Total One')); // totals only, no names
   });
 });

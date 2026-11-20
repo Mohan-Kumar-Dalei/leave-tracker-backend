@@ -23,6 +23,8 @@ const { open } = await import('../src/services/secretBox.js');
 const { deliverMail } = await import('../src/services/mail.js');
 const { smtp } = await import('../src/services/appPassword.js');
 const { default: AppPasswordLink } = await import('../src/models/AppPasswordLink.js');
+const { default: Department } = await import('../src/models/Department.js');
+const { createInvite } = await import('../src/services/departments.js');
 
 // Gmail's SMTP, swapped per test. verify() and sendMail() follow `gmailSmtp`.
 let gmailSmtp;
@@ -176,5 +178,36 @@ describe('Gmail App Password', () => {
     assert.ok(await Notification.findOne({ recipient: user._id, kind: 'gmail', title: /App Password/ }));
     const status = await agent.get('/api/me/gmail').expect(200);
     assert.deepEqual([status.body.connected, status.body.needsReconnect], [false, true]);
+  });
+});
+
+describe('invitations start with the Gmail App Password', () => {
+  it('needs a Gmail App Password Google accepts, then saves it to the new account', async () => {
+    await Department.deleteMany({ name: 'Invite Dept' });
+    const department = await Department.create({ name: 'Invite Dept' });
+    const inviter = await makeUser({ role: 'admin' });
+    const { token } = await createInvite({
+      department,
+      role: 'assistant',
+      name: 'Invited AM',
+      email: 'invited.am@example.com',
+      designation: 'Assistant Manager',
+      invitedBy: inviter._id,
+    });
+    const page = await request(app).get(`/api/join/invite/${token}`).expect(200);
+    assert.equal(page.body.appPassword, true);
+
+    const account = { name: 'Invited AM', password: 'invited-pass-123' };
+    await request(app).post(`/api/join/invite/${token}`).send(account).expect(400);
+    gmailSmtp.verify = async () => {
+      throw authError();
+    };
+    await request(app).post(`/api/join/invite/${token}`).send({ ...account, appPassword: 'abcdabcdabcdabcd' }).expect(400);
+    gmailSmtp.verify = async () => true;
+    await request(app).post(`/api/join/invite/${token}`).send({ ...account, appPassword: 'abcd abcd abcd abcd' }).expect(201);
+
+    const user = await User.findOne({ email: 'invited.am@example.com' });
+    const link = await AppPasswordLink.findOne({ user: user._id }).select('+password');
+    assert.equal(open(link.password), 'abcdabcdabcdabcd');
   });
 });

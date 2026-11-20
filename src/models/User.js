@@ -9,6 +9,15 @@ const userSchema = new mongoose.Schema(
     // The owner (the company's HR or CEO) runs the organisation: departments
     // and their admins. It is not part of any department's leave.
     role: { type: String, enum: ['employee', 'admin', 'owner'], default: 'employee', index: true },
+    // The person's place, saved so the users collection reads clearly in the
+    // database: manager, assistant manager or employee (HR for the owner).
+    // Kept in step with the departments by refreshPositions().
+    position: {
+      type: String,
+      enum: ['manager', 'assistantmanager', 'employee', 'hr'],
+      default: 'employee',
+      index: true,
+    },
     department: { type: String, trim: true, maxlength: 60, default: '' },
     designation: { type: String, trim: true, maxlength: 80, default: '' },
     phone: { type: String, trim: true, maxlength: 20, default: '' },
@@ -25,6 +34,9 @@ const userSchema = new mongoose.Schema(
     hidden: { type: Boolean, default: false, index: true },
     // Who this person reports to, for the department tree and "Reporting to".
     reportsTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Who this person's leave requests go to, when the manager has chosen an
+    // assistant manager for them (otherwise their department's AM).
+    leaveReportTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     // Made a team lead by their manager or assistant manager; others in the
     // department can then report to them.
     teamLead: { type: Boolean, default: false },
@@ -57,5 +69,9 @@ const userSchema = new mongoose.Schema(
     },
   },
 );
+
+// The users collection sorted the way people read it: by department, then
+// manager, assistant manager and team, then employee ID (CON-001, CON-002...).
+userSchema.index({ department: 1, position: 1, employeeId: 1 });
 
 export default mongoose.model('User', userSchema);

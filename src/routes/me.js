@@ -1,4 +1,5 @@
 import { gunzipSync } from 'node:zlib';
+import bcrypt from 'bcryptjs';
 import { Router } from 'express';
 import { z } from 'zod';
 import env from '../config/env.js';
@@ -24,8 +25,8 @@ import { cleanSignature, MAX_SIGNATURE_LENGTH } from '../services/signature.js';
 import { APPLICATION_SUBJECT, designationOf, signatureData } from '../services/leaveMail.js';
 import { isWeekend } from '../services/leaveDays.js';
 import { toDayString, todayString, yearRange } from '../utils/dates.js';
-import { badRequest, pageMeta, paginate, toCsv } from '../utils/http.js';
-import { idParams, limit, page, phone, year } from '../utils/schemas.js';
+import { badRequest, conflict, pageMeta, paginate, toCsv } from '../utils/http.js';
+import { email as emailSchema, idParams, limit, page, phone, year } from '../utils/schemas.js';
 
 const router = Router();
 
@@ -349,14 +350,17 @@ router.delete('/gmail/app-password', async (req, res) => {
   res.status(204).end();
 });
 
-// Everyone keeps their own name, phone, designation and department up to date,
-// along with the signature their leave mails end with. Email and employee ID
-// stay with the admin.
+// Everyone keeps their own name, email, phone, designation and department up
+// to date, along with the signature their leave mails end with. A new email
+// needs the current password, and the Gmail App Password made for the old
+// address is dropped. The employee ID stays with the admin.
 router.patch(
   '/profile',
   validate({
     body: z.strictObject({
       name: z.string().trim().min(2, 'Enter your full name').max(80).optional(),
+      email: emailSchema.optional(),
+      currentPassword: z.string().max(200).optional(),
       phone: phone.optional(),
       designation: z.string().trim().max(80).optional(),
       department: z.string().trim().max(60).optional(),
@@ -372,7 +376,17 @@ router.patch(
     }),
   }),
   async (req, res) => {
-    const { name, phone: phoneNumber, designation, department, signatureGzip } = req.valid.body;
+    const { name, email: newEmail, currentPassword, phone: phoneNumber, designation, department, signatureGzip } =
+      req.valid.body;
+    if (newEmail !== undefined && newEmail !== req.user.email) {
+      const me = await User.findById(req.user._id).select('+passwordHash');
+      if (!currentPassword || !(await bcrypt.compare(currentPassword, me.passwordHash ?? ''))) {
+        throw badRequest('Enter your current password to change your email.');
+      }
+      if (await User.exists({ email: newEmail, _id: { $ne: req.user._id } })) throw conflict('Someone already uses that email.');
+      req.user.email = newEmail;
+      await AppPasswordLink.deleteOne({ user: req.user._id });
+    }
     const signatureHtml = signatureGzip !== undefined ? unpackSignature(signatureGzip) : req.valid.body.signatureHtml;
     if (name !== undefined) req.user.name = name;
     if (phoneNumber !== undefined) req.user.phone = phoneNumber;

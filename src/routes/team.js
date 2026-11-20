@@ -3,8 +3,9 @@ import env from '../config/env.js';
 import Department from '../models/Department.js';
 import Leave from '../models/Leave.js';
 import User from '../models/User.js';
+import { getBalances } from '../services/balances.js';
 import { notHidden } from '../services/hidden.js';
-import { parseDay, toDayString, todayString } from '../utils/dates.js';
+import { monthRange, parseDay, toDayString, todayString } from '../utils/dates.js';
 
 // The team, for everyone signed in: who is in which department and role, how
 // to reach them, and who is on leave today. Only approved leave counts. Leave
@@ -23,7 +24,7 @@ router.get('/', async (req, res) => {
 
   const [people, onLeave, departments] = await Promise.all([
     User.find({ isActive: true, role: { $ne: 'owner' }, ...notHidden })
-      .select('name employeeId email phone designation department role avatarUrl reportsTo workFromHome teamLead')
+      .select('name employeeId email phone designation department role avatarUrl reportsTo workFromHome teamLead leaveReportTo')
       .sort({ name: 1 }),
     Leave.find({ status: 'approved', from: { $lte: day }, to: { $gte: day } }).populate('leaveType', 'name code'),
     Department.find().select('name manager admins'),
@@ -59,6 +60,7 @@ router.get('/', async (req, res) => {
       reportsTo: owner || !person.reportsTo ? null : String(person.reportsTo),
       workFromHome: person.workFromHome,
       teamLead: Boolean(person.teamLead),
+      leaveReportTo: person.leaveReportTo ? String(person.leaveReportTo) : null,
       leave: leaveOf.get(person.id) ?? null,
       // The departments this person manages; they head each one's tree.
       manages: [],
@@ -103,6 +105,58 @@ router.get('/', async (req, res) => {
       (a, b) => Number(b === HR_DEPARTMENT) - Number(a === HR_DEPARTMENT) || a.localeCompare(b),
     ),
     members,
+  });
+});
+
+// Leave totals everyone can see, for the whole company and each department
+// (managers and assistant managers included): how many days are still
+// available, how many were applied for this year, and how many were taken
+// this month. Only totals, never one person's figures.
+router.get('/totals', async (_req, res) => {
+  const today = todayString(env.TIMEZONE);
+  const year = Number(today.slice(0, 4));
+  const month = monthRange(year, Number(today.slice(5, 7)) - 1);
+  const people = await User.find({ isActive: true, role: { $ne: 'owner' }, ...notHidden }).select('department');
+
+  const [perPerson, monthRows] = await Promise.all([
+    Promise.all(
+      people.map(async (person) => {
+        const balances = (await getBalances(person.id, year)).filter((row) => row.available !== null);
+        return {
+          department: person.department || env.DEFAULT_DEPARTMENT,
+          available: balances.reduce((sum, row) => sum + row.available, 0),
+          applied: balances.reduce((sum, row) => sum + row.booked, 0),
+        };
+      }),
+    ),
+    Leave.aggregate([
+      { $match: { status: 'approved', user: { $in: people.map((person) => person._id) }, from: { $gte: month.start, $lte: month.end } } },
+      { $lookup: { from: 'users', localField: 'user', foreignField: '_id', as: 'person' } },
+      { $unwind: '$person' },
+      { $group: { _id: '$person.department', days: { $sum: '$days' } } },
+    ]),
+  ]);
+
+  const rows = new Map();
+  const rowFor = (name) => {
+    if (!rows.has(name)) rows.set(name, { name, people: 0, available: 0, applied: 0, takenThisMonth: 0 });
+    return rows.get(name);
+  };
+  for (const item of perPerson) {
+    const row = rowFor(item.department);
+    row.people += 1;
+    row.available += item.available;
+    row.applied += item.applied;
+  }
+  for (const item of monthRows) rowFor(item._id || env.DEFAULT_DEPARTMENT).takenThisMonth += item.days;
+
+  const departments = [...rows.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const sum = (key) => departments.reduce((total, row) => total + row[key], 0);
+  res.json({
+    year,
+    month: parseDay(today).toLocaleString('en-IN', { month: 'long', timeZone: 'UTC' }),
+    company: { people: sum('people'), available: sum('available'), applied: sum('applied'), takenThisMonth: sum('takenThisMonth') },
+    departments,
   });
 });
 

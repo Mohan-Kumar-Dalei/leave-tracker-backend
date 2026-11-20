@@ -10,6 +10,7 @@ import ImportedUsage from '../models/ImportedUsage.js';
 import Leave, { LEAVE_STATUSES } from '../models/Leave.js';
 import LeaveType from '../models/LeaveType.js';
 import User from '../models/User.js';
+import AppPasswordLink from '../models/AppPasswordLink.js';
 import {
   BALANCE_HEADERS,
   balanceCells,
@@ -74,7 +75,7 @@ router.get('/overview', async (req, res) => {
   const year_ = today.getUTCFullYear();
   const month = monthRange(year_, today.getUTCMonth());
 
-  const owners = await leaveOwnersIn(req.scope);
+  const owners = await leaveOwnersIn(req.scope, req.user);
   const [pendingItems, pendingCount, awayToday, nextUp, employees, approvedThisMonth, byType, holidays, earlierYear] =
     await Promise.all([
       Leave.find({ status: 'pending', user: owners })
@@ -163,7 +164,7 @@ router.get(
     const { start, end } = yearRange(selectedYear);
 
     const [leaves, holidays] = await Promise.all([
-      Leave.find({ year: selectedYear, status: { $in: ['pending', 'approved'] }, user: await leaveOwnersIn(req.scope) })
+      Leave.find({ year: selectedYear, status: { $in: ['pending', 'approved'] }, user: await leaveOwnersIn(req.scope, req.user) })
         .populate('user', 'name')
         .populate('leaveType', 'name'),
       Holiday.find({ date: { $gte: start, $lte: end } }),
@@ -245,9 +246,9 @@ async function departmentChoices(scope) {
   return (await Department.find({}).sort({ name: 1 }).select('name')).map((department) => department.name);
 }
 
-async function buildLeaveFilter({ status, user, leaveType, from, to, q, department }, baseScope) {
+async function buildLeaveFilter({ status, user, leaveType, from, to, q, department }, baseScope, viewer = null) {
   const scope = narrowScope(baseScope, department);
-  const filter = { user: await leaveOwnersIn(scope) };
+  const filter = { user: await leaveOwnersIn(scope, department ? null : viewer) };
   if (status) filter.status = status;
   if (user) filter.user = { ...filter.user, $eq: user };
   if (leaveType) filter.leaveType = leaveType;
@@ -266,7 +267,7 @@ async function buildLeaveFilter({ status, user, leaveType, from, to, q, departme
 
 router.get('/leaves', validate({ query: leaveQuery }), async (req, res) => {
   const pageInfo = paginate(req.valid.query);
-  const filter = await buildLeaveFilter(req.valid.query, req.scope);
+  const filter = await buildLeaveFilter(req.valid.query, req.scope, req.user);
 
   const [items, total] = await Promise.all([
     Leave.find(filter)
@@ -287,7 +288,7 @@ router.get('/leaves', validate({ query: leaveQuery }), async (req, res) => {
 });
 
 router.get('/leaves.csv', validate({ query: leaveQuery }), async (req, res) => {
-  const filter = await buildLeaveFilter(req.valid.query, req.scope);
+  const filter = await buildLeaveFilter(req.valid.query, req.scope, req.user);
   const leaves = await Leave.find(filter)
     .populate('user', employeeFields)
     .populate('leaveType', 'name')
@@ -367,7 +368,9 @@ router.patch(
       .populate('leaveType', 'name tracksBalance');
 
     if (!leave) throw notFound('That leave request was not found.');
-    if (!(await inScope(req.scope, leave.user))) throw notFound('That leave request was not found.');
+    if (!(await inScope(req.scope, leave.user)) && !(await canReview(req.user, leave.user))) {
+      throw notFound('That leave request was not found.');
+    }
     if (leave.status !== 'pending') throw conflict(`This request is already ${leave.status}.`);
 
     // Employees' leave is decided by the assistant manager, the assistant
@@ -479,7 +482,7 @@ router.get(
 
     // Everyone in the departments this person runs, other than themselves, so
     // a manager also sees their assistant manager. The owner is not listed.
-    const filter = { role: { $ne: 'owner' }, _id: { $ne: req.user._id }, ...notHidden, ...peopleIn(req.scope) };
+    const filter = { role: { $ne: 'owner' }, ...notHidden, ...peopleIn(req.scope) };
     if (status !== 'all') filter.isActive = status === 'active';
     if (q) {
       const pattern = new RegExp(escapeRegex(q), 'i');
@@ -561,6 +564,11 @@ router.patch(
       throw forbidden('You can only move people within the departments you run. HR can move them elsewhere.');
     }
     if (rest.reportsTo !== undefined) await assertReportsTo(target.id, rest.reportsTo);
+    // A new email must be free; the App Password made for the old one goes.
+    const newEmail = rest.email !== undefined && rest.email !== target.email;
+    if (newEmail && (await User.exists({ email: rest.email, _id: { $ne: target._id } }))) {
+      throw conflict('Someone already uses that email.');
+    }
 
     const losingAdmin =
       target.role === 'admin' && (rest.role === 'employee' || rest.isActive === false);
@@ -574,6 +582,7 @@ router.patch(
     Object.assign(target, rest);
     if (joinedOn) target.joinedOn = parseDay(joinedOn);
     await target.save();
+    if (newEmail) await AppPasswordLink.deleteOne({ user: target._id });
 
     if (rest.isActive === false) await revokeAllSessions(target._id);
 
