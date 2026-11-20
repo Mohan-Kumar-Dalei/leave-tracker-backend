@@ -1461,15 +1461,41 @@ describe('people, positions and totals', () => {
     assert.equal(team.find((member) => member.name === 'Seller').leaveReportTo, dataAm.id);
   });
 
-  it('shows everyone the leave totals by department', async () => {
-    await makeUser({ name: 'Total One', department: 'Sales' });
+  it('shows leave totals: every department for a manager, only their own for others', async () => {
+    const one = await makeUser({ name: 'Total One', department: 'Sales' });
     await makeUser({ name: 'Total Two', department: 'Sales' });
+    const salesAm = await makeUser({ name: 'Sales Lead', role: 'admin', department: 'Sales' });
+    const boss = await makeUser({ name: 'Boss', role: 'admin', department: 'Data' });
+    await Department.create({ name: 'Sales', admins: [salesAm._id] });
+    await Department.create({ name: 'Data', manager: boss._id });
+    await apply(await signIn(one), { from: '2031-03-03', to: '2031-03-03' }).expect(201);
+
+    // An employee: their own department's totals, no names, no choice.
     const someone = await signIn(await makeUser({ name: 'Total Three', department: 'Data' }));
-    const { body } = await someone.get('/api/team/totals').expect(200);
-    const sales = body.departments.find((row) => row.name === 'Sales');
-    assert.equal(sales.people, 2);
-    assert.ok(sales.available > 0);
-    assert.equal(body.company.people, body.departments.reduce((sum, row) => sum + row.people, 0));
-    assert.ok(!JSON.stringify(body).includes('Total One')); // totals only, no names
+    const mine = (await someone.get('/api/team/totals?department=Sales').expect(200)).body;
+    assert.equal(mine.canChooseDepartment, false);
+    assert.deepEqual([mine.department, mine.departments], ['Data', ['Data']]);
+    assert.equal(mine.summary.people, 2);
+    assert.deepEqual(mine.rows, []);
+    assert.ok(!JSON.stringify(mine).includes('Total One'));
+
+    // The assistant manager: their department, person by person.
+    const am = (await (await signIn(salesAm)).get('/api/team/totals?department=Data').expect(200)).body;
+    assert.equal(am.department, 'Sales');
+    assert.equal(am.rowKind, 'person');
+    assert.deepEqual(am.rows.map((row) => row.name).sort(), ['Sales Lead', 'Total One', 'Total Two']);
+
+    // The manager: every department, or one, for any month.
+    const manager = await signIn(boss);
+    const all = (await manager.get('/api/team/totals').expect(200)).body;
+    assert.equal(all.canChooseDepartment, true);
+    assert.deepEqual(all.departments, ['Data', 'Sales']);
+    assert.equal(all.rowKind, 'department');
+    assert.equal(all.summary.people, all.rows.reduce((sum, row) => sum + row.people, 0));
+    const sales = (await manager.get('/api/team/totals?department=sales&month=3').expect(200)).body;
+    assert.equal(sales.department, 'Sales');
+    assert.equal(sales.monthName, 'March');
+    assert.equal(sales.rows.length, 3);
+    assert.equal(sales.months.length, 12);
   });
 });

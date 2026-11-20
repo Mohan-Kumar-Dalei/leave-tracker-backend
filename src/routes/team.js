@@ -3,9 +3,11 @@ import env from '../config/env.js';
 import Department from '../models/Department.js';
 import Leave from '../models/Leave.js';
 import User from '../models/User.js';
-import { getBalances } from '../services/balances.js';
+import { z } from 'zod';
+import { validate } from '../middleware/validate.js';
+import { getBalances, getMonthlyUsage } from '../services/balances.js';
 import { notHidden } from '../services/hidden.js';
-import { monthRange, parseDay, toDayString, todayString } from '../utils/dates.js';
+import { parseDay, toDayString, todayString } from '../utils/dates.js';
 
 // The team, for everyone signed in: who is in which department and role, how
 // to reach them, and who is on leave today. Only approved leave counts. Leave
@@ -108,55 +110,89 @@ router.get('/', async (req, res) => {
   });
 });
 
-// Leave totals everyone can see, for the whole company and each department
-// (managers and assistant managers included): how many days are still
-// available, how many were applied for this year, and how many were taken
-// this month. Only totals, never one person's figures.
-router.get('/totals', async (_req, res) => {
+// Leave totals: available balance, leave applied this year and leave taken,
+// month by month. A manager sees every department and can pick one (or all);
+// everyone else sees only their own department. Per-person figures are shown
+// to managers and assistant managers only; employees see the totals.
+const totalsQuery = z.object({
+  department: z.string().trim().max(60).optional(),
+  month: z.coerce.number().int().min(1).max(12).optional(),
+});
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const sameName = (a = '', b = '') => a.localeCompare(b, 'en', { sensitivity: 'accent' }) === 0;
+
+router.get('/totals', validate({ query: totalsQuery }), async (req, res) => {
   const today = todayString(env.TIMEZONE);
   const year = Number(today.slice(0, 4));
-  const month = monthRange(year, Number(today.slice(5, 7)) - 1);
-  const people = await User.find({ isActive: true, role: { $ne: 'owner' }, ...notHidden }).select('department');
+  const month = req.valid.query.month ?? Number(today.slice(5, 7));
+  const manager = req.user.role === 'owner' || Boolean(await Department.exists({ manager: req.user._id }));
+  const own = req.user.department || env.DEFAULT_DEPARTMENT;
 
-  const [perPerson, monthRows] = await Promise.all([
-    Promise.all(
-      people.map(async (person) => {
-        const balances = (await getBalances(person.id, year)).filter((row) => row.available !== null);
-        return {
-          department: person.department || env.DEFAULT_DEPARTMENT,
-          available: balances.reduce((sum, row) => sum + row.available, 0),
-          applied: balances.reduce((sum, row) => sum + row.booked, 0),
-        };
-      }),
-    ),
-    Leave.aggregate([
-      { $match: { status: 'approved', user: { $in: people.map((person) => person._id) }, from: { $gte: month.start, $lte: month.end } } },
-      { $lookup: { from: 'users', localField: 'user', foreignField: '_id', as: 'person' } },
-      { $unwind: '$person' },
-      { $group: { _id: '$person.department', days: { $sum: '$days' } } },
-    ]),
-  ]);
+  const everyone = await User.find({ isActive: true, role: { $ne: 'owner' }, ...notHidden })
+    .select('name employeeId designation department role')
+    .sort({ name: 1 });
+  const departmentOfPerson = (person) => person.department || env.DEFAULT_DEPARTMENT;
+  const allNames = [...new Set(everyone.map(departmentOfPerson))].sort((a, b) => a.localeCompare(b));
+  const departments = manager ? allNames : [own];
 
-  const rows = new Map();
-  const rowFor = (name) => {
-    if (!rows.has(name)) rows.set(name, { name, people: 0, available: 0, applied: 0, takenThisMonth: 0 });
-    return rows.get(name);
-  };
-  for (const item of perPerson) {
-    const row = rowFor(item.department);
-    row.people += 1;
-    row.available += item.available;
-    row.applied += item.applied;
+  // A manager picks a department or all; anyone else always has their own.
+  const wanted = req.valid.query.department;
+  const chosen = manager ? (wanted && wanted !== 'all' ? departments.find((name) => sameName(name, wanted)) ?? null : null) : own;
+  const people = chosen ? everyone.filter((person) => sameName(departmentOfPerson(person), chosen)) : everyone;
+
+  const figures = await Promise.all(
+    people.map(async (person) => {
+      const [balances, months] = await Promise.all([getBalances(person.id, year), getMonthlyUsage(person.id, year)]);
+      const tracked = balances.filter((row) => row.available !== null);
+      return {
+        person,
+        department: departmentOfPerson(person),
+        available: tracked.reduce((sum, row) => sum + row.available, 0),
+        applied: tracked.reduce((sum, row) => sum + row.booked, 0),
+        months,
+      };
+    }),
+  );
+
+  const addMonths = (list) => list.reduce((sum, item) => sum.map((value, index) => value + item.months[index]), Array(12).fill(0));
+  const summarise = (list) => ({
+    people: list.length,
+    available: list.reduce((sum, item) => sum + item.available, 0),
+    applied: list.reduce((sum, item) => sum + item.applied, 0),
+    takenInMonth: list.reduce((sum, item) => sum + item.months[month - 1], 0),
+  });
+
+  // All departments: a row each. One department: a row per person, for
+  // managers and assistant managers only.
+  const staff = req.user.role === 'admin' || req.user.role === 'owner';
+  let rows = [];
+  let rowKind = 'department';
+  if (!chosen) {
+    rows = departments.map((name) => ({ name, ...summarise(figures.filter((item) => item.department === name)) }));
+  } else if (staff) {
+    rowKind = 'person';
+    rows = figures.map((item) => ({
+      name: item.person.name,
+      employeeId: item.person.employeeId,
+      designation: item.person.designation || (item.person.role === 'admin' ? 'Admin' : env.DEFAULT_DESIGNATION),
+      people: 1,
+      available: item.available,
+      applied: item.applied,
+      takenInMonth: item.months[month - 1],
+    }));
   }
-  for (const item of monthRows) rowFor(item._id || env.DEFAULT_DEPARTMENT).takenThisMonth += item.days;
 
-  const departments = [...rows.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const sum = (key) => departments.reduce((total, row) => total + row[key], 0);
   res.json({
     year,
-    month: parseDay(today).toLocaleString('en-IN', { month: 'long', timeZone: 'UTC' }),
-    company: { people: sum('people'), available: sum('available'), applied: sum('applied'), takenThisMonth: sum('takenThisMonth') },
+    month,
+    monthName: MONTHS[month - 1],
+    canChooseDepartment: manager,
     departments,
+    department: chosen ?? 'all',
+    summary: summarise(figures),
+    months: addMonths(figures),
+    rowKind,
+    rows,
   });
 });
 
