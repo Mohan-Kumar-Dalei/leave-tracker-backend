@@ -1,6 +1,5 @@
 import env from '../config/env.js';
 import { cleanSignature, signatureToText } from './signature.js';
-import { departmentOf } from './scope.js';
 
 // Leave mails read like the ones people already send by hand: the employee
 // writes a "Leave Application" to the admin with the team in CC, and the admin
@@ -108,7 +107,7 @@ export function reasonFromLetter(text) {
 
 // The company's standard signature, the same table everyone at Contify uses
 // in Gmail: the logo with its tagline on the left, a thin line, then the
-// person's name, designation and department, phone and email, the trial and
+// person's name and designation, phone and email, the trial and
 // demo links and LinkedIn. Only the person's own details change.
 const UTM = 'utm_source=email_signature&utm_medium=email_signature&utm_campaign=email_signature_2023';
 export const SIGNATURE = {
@@ -127,9 +126,9 @@ export function signatureData() {
 const FONT =
   'font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Roboto, Oxygen-Sans, Ubuntu, Cantarell, &quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif';
 
-// "Assistant Manager - Content Integration".
+// The line under the name: the designation alone, e.g. "Assistant Manager".
 function roleLine(person) {
-  return [designationOf(person), departmentOf(person)].filter(Boolean).join(' - ');
+  return designationOf(person);
 }
 
 // The standard signature for one person, as HTML.

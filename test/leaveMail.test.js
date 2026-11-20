@@ -24,12 +24,13 @@ describe('leave mails', () => {
     assert.match(mail.text, /^Hi Sir,/);
     assert.match(mail.text, /request two days of leave \(Casual\/Sick\) on \(09\/11\/2026 and 10\/11\/2026\) due to personal work\./);
     assert.match(mail.text, /Thanks & Regards,\nRavi Kumar Das/);
-    assert.match(mail.text, /\nAnalyst - Content Integration\n/, 'falls back to the default designation, with the department');
+    assert.match(mail.text, /\nAnalyst\n/, 'falls back to the default designation, without the department');
+    assert.doesNotMatch(mail.html, /Content Integration/, 'the signature leaves the department out');
     // The company's standard signature: the Gmail table with the Contify logo.
     assert.match(mail.html, /<img src="https:\/\/112233\.contify\.com\/images\/contify-prelogin-assets\/home\/contify-png-assets\/logo-with-tagline\.png" alt="logo contify" width="132"/);
     assert.match(mail.html, /border-left:1px solid rgb\(224, 224, 224\)/);
     assert.match(mail.html, />Ravi Kumar Das<br \/><\/p>/);
-    assert.match(mail.html, />Analyst - Content Integration<\/p>/);
+    assert.match(mail.html, />Analyst<\/p>/);
     assert.match(mail.html, />Free trial<\/a> • <a [^>]*>Watch a demo<\/a>/);
     assert.match(mail.html, /Follow us for the latest updates <img alt="Linked In icon"/);
   });
@@ -48,7 +49,7 @@ describe('leave mails', () => {
     assert.deepEqual(mail.to, ['ravi@example.com']);
     assert.equal(mail.sender, admin);
     assert.match(mail.text, /^Hi Ravi,\n\nYour leave request is approved\.\n\nThanks,\nAsha\n/);
-    assert.match(mail.text, /Assistant Manager - Content Integration\n\+91 90000 00000 • asha@example\.com/);
+    assert.match(mail.text, /Assistant Manager\n\+91 90000 00000 • asha@example\.com/);
     assert.match(mail.html, /<a href="tel:\+919000000000"[^>]*>\+91 90000 00000<\/a> • <a href="mailto:asha@example\.com"/);
 
     const rejected = decisionMail({ employee, reviewer: admin, leave, decision: 'rejected', note: 'Release week.' });
