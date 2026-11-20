@@ -8,6 +8,7 @@ import Leave, { ACTIVE_STATUSES } from '../models/Leave.js';
 import LeaveType from '../models/LeaveType.js';
 import { monthRange, parseDay, todayString, yearRange } from '../utils/dates.js';
 import { isStaff, leaveOwnersIn, scopeOf } from '../services/scope.js';
+import { currentWeather } from '../services/weather.js';
 import { conflict, notFound } from '../utils/http.js';
 import { day, idParams, year } from '../utils/schemas.js';
 
@@ -152,5 +153,10 @@ router.get(
     });
   },
 );
+
+// The weather at the office, for the sky on the dashboard.
+router.get('/weather', async (_req, res) => {
+  res.json(await currentWeather());
+});
 
 export default router;
