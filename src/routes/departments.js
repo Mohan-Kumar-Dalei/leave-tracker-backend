@@ -107,7 +107,7 @@ router.get('/:id', validate({ params: idParams }), async (req, res) => {
       leaveReportTo: person.leaveReportTo ? String(person.leaveReportTo) : null,
     })),
     // Who leave can be sent to: every department's assistant manager.
-    assistants: await assistantChoices(),
+    assistants: await assistantChoices(department),
     requests,
   });
 });
@@ -217,15 +217,25 @@ const memberParams = z.strictObject({ id: objectId, userId: objectId });
 
 // Every department's assistant manager, with the department, for the
 // "Leave goes to" choice.
-async function assistantChoices() {
-  const departments = await Department.find({ 'admins.0': { $exists: true } }).select('name admins').sort({ name: 1 });
-  const people = await User.find({ _id: { $in: departments.map((department) => department.admins[0]) }, isActive: true }).select(
-    'name',
-  );
-  const byId = new Map(people.map((person) => [person.id, person.name]));
-  return departments
-    .filter((department) => byId.has(String(department.admins[0])))
-    .map((department) => ({ id: String(department.admins[0]), name: byId.get(String(department.admins[0])), department: department.name }));
+// Who a person's leave can go to: their own department's assistant managers
+// (anyone running it, or with that designation) and its manager. Never an
+// AM of another department.
+async function assistantChoices(department) {
+  const assistants = await User.find({
+    ...memberFilter,
+    isActive: true,
+    ...peopleIn([department.name]),
+    _id: { $ne: department.manager ?? null },
+    $or: [{ _id: { $in: department.admins ?? [] } }, { role: 'admin' }, { designation: /assistant\s*manager/i }],
+  })
+    .collation(CASE_INSENSITIVE)
+    .select('name')
+    .sort({ name: 1 });
+  const manager = department.manager ? await User.findOne({ _id: department.manager, isActive: true }).select('name') : null;
+  return [
+    ...assistants.map((person) => ({ id: person.id, name: person.name, place: 'Assistant Manager' })),
+    ...(manager ? [{ id: manager.id, name: manager.name, place: 'Manager' }] : []),
+  ];
 }
 router.patch(
   '/:id/members/:userId',
@@ -248,8 +258,8 @@ router.patch(
       const isManagerHere = String(department.manager ?? '') === String(req.user._id);
       if (!isManagerHere && req.user.role !== 'owner') throw forbidden('Only the manager chooses who gets leave requests.');
       if (leaveReportTo) {
-        const choices = (await assistantChoices()).map((choice) => choice.id);
-        if (!choices.includes(String(leaveReportTo))) throw badRequest('Pick one of the assistant managers.');
+        const choices = (await assistantChoices(department)).map((choice) => choice.id);
+        if (!choices.includes(String(leaveReportTo))) throw badRequest(`Pick an assistant manager or the manager of ${department.name}.`);
         if (String(leaveReportTo) === person.id) throw badRequest('Someone cannot approve their own leave.');
       }
       person.leaveReportTo = leaveReportTo ?? null;

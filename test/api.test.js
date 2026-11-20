@@ -1448,7 +1448,8 @@ describe('people, positions and totals', () => {
     const salesAm = await makeUser({ role: 'admin', name: 'Sales AM', department: 'Sales' });
     const dataAm = await makeUser({ role: 'admin', name: 'Data AM', department: 'Data' });
     const seller = await makeUser({ name: 'Seller', department: 'Sales' });
-    const sales = await Department.create({ name: 'Sales', manager: manager._id, admins: [salesAm._id] });
+    const secondAm = await makeUser({ role: 'admin', name: 'Second AM', department: 'Sales', designation: 'Assistant Manager' });
+    const sales = await Department.create({ name: 'Sales', manager: manager._id, admins: [salesAm._id, secondAm._id] });
     await Department.create({ name: 'Data', admins: [dataAm._id] });
 
     // Positions are saved on the users for reading the database.
@@ -1460,23 +1461,29 @@ describe('people, positions and totals', () => {
 
     const boss = await signIn(manager);
     const page = (await boss.get(`/api/departments/${sales.id}`).expect(200)).body;
-    assert.deepEqual(page.assistants.map((item) => item.name).sort(), ['Data AM', 'Sales AM']);
+    // Only Sales' own assistant managers and its manager, never another
+    // department's AM.
+    assert.deepEqual(
+      page.assistants.map((item) => `${item.name} (${item.place})`),
+      ['Sales AM (Assistant Manager)', 'Second AM (Assistant Manager)', 'Big Manager (Manager)'],
+    );
     const am = await signIn(salesAm);
-    await am.patch(`/api/departments/${sales.id}/members/${seller.id}`).send({ leaveReportTo: dataAm.id }).expect(403);
+    await am.patch(`/api/departments/${sales.id}/members/${seller.id}`).send({ leaveReportTo: secondAm.id }).expect(403);
     await boss.patch(`/api/departments/${sales.id}/members/${seller.id}`).send({ leaveReportTo: seller.id }).expect(400);
-    await boss.patch(`/api/departments/${sales.id}/members/${seller.id}`).send({ leaveReportTo: dataAm.id }).expect(200);
+    await boss.patch(`/api/departments/${sales.id}/members/${seller.id}`).send({ leaveReportTo: dataAm.id }).expect(400);
+    await boss.patch(`/api/departments/${sales.id}/members/${seller.id}`).send({ leaveReportTo: secondAm.id }).expect(200);
 
-    // The seller's leave now goes to the Data AM, who sees and decides it.
+    // The seller's leave now goes to the second AM, who sees and decides it.
     const sellerAgent = await signIn(seller);
     const to = (await sellerAgent.get('/api/me/compose').expect(200)).body.to.map((item) => item.email);
-    assert.deepEqual(to, [dataAm.email]);
+    assert.deepEqual(to, [secondAm.email]);
     const leave = (await apply(sellerAgent, { from: '2031-03-03', to: '2031-03-03' }).expect(201)).body.leave;
-    const dataAgent = await signIn(dataAm);
-    const pending = (await dataAgent.get('/api/admin/leaves?status=pending').expect(200)).body.items.map((item) => item.id);
+    const secondAgent = await signIn(secondAm);
+    const pending = (await secondAgent.get('/api/admin/leaves?status=pending').expect(200)).body.items.map((item) => item.id);
     assert.deepEqual(pending, [leave.id]);
-    await dataAgent.patch(`/api/admin/leaves/${leave.id}/review`).send({ decision: 'approved' }).expect(200);
+    await secondAgent.patch(`/api/admin/leaves/${leave.id}/review`).send({ decision: 'approved' }).expect(200);
     const team = (await sellerAgent.get('/api/team').expect(200)).body.members;
-    assert.equal(team.find((member) => member.name === 'Seller').leaveReportTo, dataAm.id);
+    assert.equal(team.find((member) => member.name === 'Seller').leaveReportTo, secondAm.id);
   });
 
   it('shows leave totals: every department for a manager, only their own for others', async () => {
