@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { Router } from 'express';
 import { z } from 'zod';
 import env from '../config/env.js';
@@ -24,7 +25,8 @@ import { notifyUsers } from '../services/notify.js';
 import { approvedMail, inviteMail, inviteUrl, joinLinkMail, joinUrl } from '../services/orgMail.js';
 import { peopleIn } from '../services/scope.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http.js';
-import { email, idParams, objectId } from '../utils/schemas.js';
+import { todayString } from '../utils/dates.js';
+import { email, idParams, objectId, phone } from '../utils/schemas.js';
 
 // A department's own page, for whoever runs it: its manager, its assistant
 // manager, and the organisation's owner. From here they share the join link,
@@ -208,6 +210,31 @@ router.post('/:id/requests/:requestId/reject', validate({ params: requestParams 
   request.appPassword = undefined;
   await request.save();
   res.status(204).end();
+});
+
+// Adds an employee to the department straight away, the same way as from
+// Organisation: the next employee ID in the CON series, and a starting
+// password of first name @ year (e.g. Asha@2026), shown once.
+const newPerson = z.strictObject({
+  name: z.string().trim().min(2, 'Write the full name').max(80),
+  email,
+  designation: z.string().trim().max(80).optional(),
+  phone: phone.optional(),
+});
+router.post('/:id/people', validate({ params: idParams, body: newPerson }), async (req, res) => {
+  const department = await managed(req, req.valid.params.id);
+  const fields = req.valid.body;
+  if (await User.exists({ email: fields.email })) throw conflict('Someone already uses that email.');
+  const year = todayString(env.TIMEZONE).slice(0, 4);
+  const startingPassword = `${fields.name.split(/\s+/)[0]}@${year}`;
+  const person = await createWithNextId({
+    ...fields,
+    department: department.name,
+    role: 'employee',
+    reportsTo: reportsToFor(department),
+    passwordHash: await bcrypt.hash(startingPassword, 12),
+  });
+  res.status(201).json({ person, startingPassword });
 });
 
 // The manager or the assistant manager arranges the team: makes someone a

@@ -1486,6 +1486,32 @@ describe('people, positions and totals', () => {
     assert.equal(team.find((member) => member.name === 'Seller').leaveReportTo, secondAm.id);
   });
 
+  it('lets the manager and the AM add an employee to their department, as Organisation does', async () => {
+    await makeUser({ employeeId: 'CON-040' });
+    const boss = await makeUser({ role: 'admin', name: 'Add Boss', department: 'Ops' });
+    const am = await makeUser({ role: 'admin', name: 'Add AM', department: 'Ops' });
+    const ops = await Department.create({ name: 'Ops', manager: boss._id, admins: [am._id] });
+    const other = await Department.create({ name: 'Elsewhere' });
+
+    const amAgent = await signIn(am);
+    const added = await amAgent
+      .post(`/api/departments/${ops.id}/people`)
+      .send({ name: 'Neha Rao', email: 'neha.rao@example.com', designation: 'Analyst' })
+      .expect(201);
+    assert.equal(added.body.person.employeeId, 'CON-041');
+    assert.equal(added.body.person.department, 'Ops');
+    assert.equal(String(added.body.person.reportsTo), am.id);
+    assert.equal(added.body.startingPassword, `Neha@${new Date().getFullYear()}`);
+    await request(app).post('/api/auth/login').send({ email: 'neha.rao@example.com', password: added.body.startingPassword }).expect(200);
+    await amAgent.post(`/api/departments/${ops.id}/people`).send({ name: 'Neha Two', email: 'neha.rao@example.com' }).expect(409);
+    // Not into a department they do not run, and not as an employee.
+    await amAgent.post(`/api/departments/${other.id}/people`).send({ name: 'No One', email: 'no.one@example.com' }).expect(403);
+    const employee = await signIn(await makeUser({ department: 'Ops' }));
+    await employee.post(`/api/departments/${ops.id}/people`).send({ name: 'No One', email: 'no.two@example.com' }).expect(403);
+    // The manager adds one too.
+    await (await signIn(boss)).post(`/api/departments/${ops.id}/people`).send({ name: 'Ravi Das', email: 'ravi.das@example.com' }).expect(201);
+  });
+
   it('shows leave totals: every department for a manager, only their own for others', async () => {
     const one = await makeUser({ name: 'Total One', department: 'Sales' });
     await makeUser({ name: 'Total Two', department: 'Sales' });
