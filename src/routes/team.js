@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import env from '../config/env.js';
 import Department from '../models/Department.js';
+import ImportedUsage from '../models/ImportedUsage.js';
 import Leave from '../models/Leave.js';
+import LeaveType from '../models/LeaveType.js';
 import User from '../models/User.js';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
-import { getBalances, getMonthlyUsage } from '../services/balances.js';
+import { getBalances } from '../services/balances.js';
 import { notHidden } from '../services/hidden.js';
 import { parseDay, toDayString, todayString } from '../utils/dates.js';
 
@@ -132,16 +134,33 @@ router.get('/', async (req, res) => {
 const totalsQuery = z.object({
   department: z.string().trim().max(60).optional(),
   month: z.coerce.number().int().min(1).max(12).optional(),
+  // A leave type's code, or 'all'. The tracker sheet counts Casual/Sick leave.
+  type: z.string().trim().max(20).optional(),
 });
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const sameName = (a = '', b = '') => a.localeCompare(b, 'en', { sensitivity: 'accent' }) === 0;
+const DEFAULT_TYPE = 'CLSL';
 
+// Counted the way the team's tracker sheet counts:
+//   Leave Availed  leave taken this year: approved here plus the old sheet's
+//                  days (pending requests are not taken yet)
+//   Leave Balance  what the year gives (quota and any credits) minus availed
+//   Jan ... Dec    leave taken each month, by the month it starts in
+// A manager sees every department and can pick one (or all); everyone else
+// sees only their own department. Person by person for managers and assistant
+// managers; employees see the totals.
 router.get('/totals', validate({ query: totalsQuery }), async (req, res) => {
   const today = todayString(env.TIMEZONE);
   const year = Number(today.slice(0, 4));
   const month = req.valid.query.month ?? Number(today.slice(5, 7));
   const manager = req.user.role === 'owner' || Boolean(await Department.exists({ manager: req.user._id }));
   const own = req.user.department || env.DEFAULT_DEPARTMENT;
+
+  const types = await LeaveType.find({ isActive: true }).sort({ order: 1, name: 1 });
+  const wantedType = req.valid.query.type ?? DEFAULT_TYPE;
+  // Casual/Sick leave unless asked otherwise (else the first type with a balance).
+  const fallback = types.find((item) => item.code === DEFAULT_TYPE) ?? types.find((item) => item.tracksBalance) ?? null;
+  const type = wantedType === 'all' ? null : types.find((item) => item.code === wantedType) ?? fallback;
 
   const everyone = await User.find({ isActive: true, role: { $ne: 'owner' }, ...notHidden })
     .select('name employeeId designation department role')
@@ -154,27 +173,45 @@ router.get('/totals', validate({ query: totalsQuery }), async (req, res) => {
   const wanted = req.valid.query.department;
   const chosen = manager ? (wanted && wanted !== 'all' ? departments.find((name) => sameName(name, wanted)) ?? null : null) : own;
   const people = chosen ? everyone.filter((person) => sameName(departmentOfPerson(person), chosen)) : everyone;
+  const ids = people.map((person) => person._id);
+  const typeMatch = type ? { leaveType: type._id } : {};
+
+  // Taken per person per month: approved leave here, and the old sheet's days.
+  const [approved, imported] = await Promise.all([
+    Leave.aggregate([
+      { $match: { user: { $in: ids }, year, status: 'approved', ...typeMatch } },
+      { $group: { _id: { user: '$user', month: { $month: '$from' } }, days: { $sum: '$days' } } },
+    ]),
+    ImportedUsage.aggregate([
+      { $match: { user: { $in: ids }, year, ...typeMatch } },
+      { $group: { _id: { user: '$user', month: '$month' }, days: { $sum: '$days' } } },
+    ]),
+  ]);
+  const monthsOf = new Map(people.map((person) => [person.id, Array(12).fill(0)]));
+  for (const row of [...approved, ...imported]) monthsOf.get(String(row._id.user))[row._id.month - 1] += row.days;
 
   const figures = await Promise.all(
     people.map(async (person) => {
-      const [balances, months] = await Promise.all([getBalances(person.id, year), getMonthlyUsage(person.id, year)]);
-      const tracked = balances.filter((row) => row.available !== null);
-      return {
-        person,
-        department: departmentOfPerson(person),
-        available: tracked.reduce((sum, row) => sum + row.available, 0),
-        applied: tracked.reduce((sum, row) => sum + row.booked, 0),
-        months,
-      };
+      const months = monthsOf.get(person.id);
+      const availed = months.reduce((sum, days) => sum + days, 0);
+      // What the year gives: the quota plus credits, for leave that has one.
+      const balances = (await getBalances(person.id, year)).filter(
+        (row) => row.entitled !== null && (!type || row.leaveType.id === type.id),
+      );
+      // Each type with a balance: what it gives minus what was taken of it
+      // (Leave Without Pay has no balance, so it never lowers one).
+      const balance = balances.reduce((sum, row) => sum + row.entitled - row.earlier - row.approved, 0);
+      return { person, department: departmentOfPerson(person), availed, balance, months };
     }),
   );
 
   const addMonths = (list) => list.reduce((sum, item) => sum.map((value, index) => value + item.months[index]), Array(12).fill(0));
   const summarise = (list) => ({
     people: list.length,
-    available: list.reduce((sum, item) => sum + item.available, 0),
-    applied: list.reduce((sum, item) => sum + item.applied, 0),
+    balance: list.reduce((sum, item) => sum + item.balance, 0),
+    availed: list.reduce((sum, item) => sum + item.availed, 0),
     takenInMonth: list.reduce((sum, item) => sum + item.months[month - 1], 0),
+    months: addMonths(list),
   });
 
   // All departments: a row each. One department: a row per person, for
@@ -191,12 +228,14 @@ router.get('/totals', validate({ query: totalsQuery }), async (req, res) => {
       employeeId: item.person.employeeId,
       designation: item.person.designation || (item.person.role === 'admin' ? 'Admin' : env.DEFAULT_DESIGNATION),
       people: 1,
-      available: item.available,
-      applied: item.applied,
+      balance: item.balance,
+      availed: item.availed,
       takenInMonth: item.months[month - 1],
+      months: item.months,
     }));
   }
 
+  const summary = summarise(figures);
   res.json({
     year,
     month,
@@ -204,8 +243,10 @@ router.get('/totals', validate({ query: totalsQuery }), async (req, res) => {
     canChooseDepartment: manager,
     departments,
     department: chosen ?? 'all',
-    summary: summarise(figures),
-    months: addMonths(figures),
+    types: types.map((item) => ({ code: item.code, name: item.name, tracksBalance: item.tracksBalance })),
+    type: type ? { code: type.code, name: type.name, tracksBalance: type.tracksBalance } : null,
+    summary,
+    months: summary.months,
     rowKind,
     rows,
   });

@@ -1515,5 +1515,20 @@ describe('people, positions and totals', () => {
     assert.equal(sales.monthName, 'March');
     assert.equal(sales.rows.length, 3);
     assert.equal(sales.months.length, 12);
+
+    // Counted like the tracker sheet: Casual/Sick leave by default; availed is
+    // leave taken (approved), balance is the year's quota minus availed, and
+    // each month shows what was taken in it. Pending leave is not taken yet.
+    const thisYear = new Date().getFullYear();
+    const taken = (await apply(await signIn(one), { from: `${thisYear}-12-01`, to: `${thisYear}-12-01` }).expect(201)).body.leave;
+    let row = (await manager.get('/api/team/totals?department=Sales').expect(200)).body.rows.find((item) => item.name === 'Total One');
+    assert.deepEqual([row.availed, row.balance], [0, casual.annualQuota]);
+    await (await signIn(salesAm)).patch(`/api/admin/leaves/${taken.id}/review`).send({ decision: 'approved' }).expect(200);
+    const sheet = (await manager.get('/api/team/totals?department=Sales&month=12').expect(200)).body;
+    row = sheet.rows.find((item) => item.name === 'Total One');
+    assert.equal(sheet.type.code, casual.code);
+    assert.deepEqual([row.availed, row.balance, row.months[11], row.takenInMonth], [1, casual.annualQuota - 1, 1, 1]);
+    assert.equal(sheet.summary.availed, 1);
+    assert.equal(sheet.summary.months[11], 1);
   });
 });
