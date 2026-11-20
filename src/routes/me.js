@@ -22,7 +22,7 @@ import {
 import { deleteFile, fileDetails, isUsableAvatar, uploadAuth } from '../services/imagekit.js';
 import User from '../models/User.js';
 import { cleanSignature, MAX_SIGNATURE_LENGTH } from '../services/signature.js';
-import { APPLICATION_SUBJECT, designationOf, signatureData } from '../services/leaveMail.js';
+import { APPLICATION_SUBJECT, designationOf, signatureData, standardSignatureHtml } from '../services/leaveMail.js';
 import { isWeekend } from '../services/leaveDays.js';
 import { toDayString, todayString, yearRange } from '../utils/dates.js';
 import { badRequest, conflict, forbidden, pageMeta, paginate, toCsv } from '../utils/http.js';
@@ -246,6 +246,8 @@ router.get('/compose', async (req, res) => {
       phone: req.user.phone,
       email: req.user.email,
       customHtml: req.user.signatureHtml,
+      // The standard signature exactly as the mail carries it, for the preview.
+      standardHtml: standardSignatureHtml(req.user),
     },
   });
 });

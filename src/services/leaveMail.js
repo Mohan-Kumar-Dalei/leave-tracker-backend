@@ -1,5 +1,6 @@
 import env from '../config/env.js';
 import { cleanSignature, signatureToText } from './signature.js';
+import { departmentOf } from './scope.js';
 
 // Leave mails read like the ones people already send by hand: the employee
 // writes a "Leave Application" to the admin with the team in CC, and the admin
@@ -105,65 +106,75 @@ export function reasonFromLetter(text) {
 
 /* Signature */
 
+// The company's standard signature, the same table everyone at Contify uses
+// in Gmail: the logo with its tagline on the left, a thin line, then the
+// person's name, designation and department, phone and email, the trial and
+// demo links and LinkedIn. Only the person's own details change.
+const UTM = 'utm_source=email_signature&utm_medium=email_signature&utm_campaign=email_signature_2023';
+export const SIGNATURE = {
+  siteUrl: `https://www.contify.com/?${UTM}`,
+  logoUrl: 'https://112233.contify.com/images/contify-prelogin-assets/home/contify-png-assets/logo-with-tagline.png',
+  trialUrl: `https://www.contify.com/signup/market-intelligence-free-trial/?${UTM}`,
+  demoUrl: `https://www.contify.com/subscriber/market-intelligence/demo/?${UTM}`,
+  linkedinUrl: 'https://www.linkedin.com/company/contify',
+  linkedinIcon: 'https://112233.contify.com/images/email-sign/icn/linkedin-logo-blue.png?v=1',
+};
+
 export function signatureData() {
-  return {
-    companyName: env.COMPANY_NAME,
-    logoUrl: env.COMPANY_LOGO_URL,
-    trialUrl: env.COMPANY_TRIAL_URL,
-    demoUrl: env.COMPANY_DEMO_URL,
-    linkedinUrl: env.COMPANY_LINKEDIN_URL,
-  };
+  return { companyName: env.COMPANY_NAME, ...SIGNATURE };
+}
+
+const FONT =
+  'font-family:-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Roboto, Oxygen-Sans, Ubuntu, Cantarell, &quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif';
+
+// "Assistant Manager - Content Integration".
+function roleLine(person) {
+  return [designationOf(person), departmentOf(person)].filter(Boolean).join(' - ');
+}
+
+// The standard signature for one person, as HTML.
+export function standardSignatureHtml(person) {
+  const phone = person.phone?.trim();
+  const tel = phone ? phone.replace(/[^\d+]/g, '') : '';
+  const contact = [
+    phone
+      ? `<a href="tel:${escapeHtml(tel)}" style="color:rgb(111, 111, 111);text-decoration:none" target="_blank" rel="noopener noreferrer">${escapeHtml(phone)}</a>`
+      : '',
+    `<a href="mailto:${escapeHtml(person.email)}" style="color:rgb(111, 111, 111);text-decoration:none" target="_blank" rel="noopener noreferrer">${escapeHtml(person.email)}</a>`,
+  ]
+    .filter(Boolean)
+    .join(' • ');
+  const role = roleLine(person);
+  const blue = `color:rgb(0, 114, 195);text-decoration:none;${FONT}`;
+
+  return `<table width="100%" cellspacing="0" cellpadding="0" style="font-style:normal;font-weight:400;background-color:rgb(255, 255, 255);color:rgb(32, 33, 36);${FONT};width:554px"><tbody><tr>`
+    + `<td width="132" style="margin:0px;padding-right:16px"><a href="${escapeHtml(SIGNATURE.siteUrl)}" style="color:rgb(17, 85, 204);text-decoration:none" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(SIGNATURE.logoUrl)}" alt="logo contify" width="132" height="auto" /></a></td>`
+    + `<td style="margin:7px 0px 0px;border-left:1px solid rgb(224, 224, 224);width:1px;height:90px;display:inline-block;padding-right:12px"><br /></td>`
+    + `<td style="margin:0px">`
+    + `<p style="margin:0px 0px 2px;color:rgb(22, 22, 22);font-size:16px;line-height:18px;font-weight:400;${FONT};padding:0px">${escapeHtml(person.name)}<br /></p>`
+    + (role ? `<p style="margin:0px 0px 8px;color:rgb(22, 22, 22);font-size:12px;line-height:14px;font-weight:300;${FONT}">${escapeHtml(role)}</p>` : '')
+    + `<p style="margin:0px 0px 8px;color:rgb(111, 111, 111);font-size:14px;line-height:16px;font-weight:400;${FONT}">${contact}</p>`
+    + `<p style="margin:0px 0px 8px;color:rgb(168, 168, 168);font-size:14px;line-height:16px;${FONT};font-weight:400;text-decoration:none"><a href="${escapeHtml(SIGNATURE.trialUrl)}" style="${blue}" target="_blank" rel="noopener noreferrer">Free trial</a> • <a href="${escapeHtml(SIGNATURE.demoUrl)}" style="${blue}" target="_blank" rel="noopener noreferrer">Watch a demo</a></p>`
+    + `<p style="margin:0px;color:rgb(111, 111, 111);font-size:14px;line-height:16px;font-weight:400;${FONT}"><a href="${escapeHtml(SIGNATURE.linkedinUrl)}" style="color:rgb(111, 111, 111);text-decoration:none" target="_blank" rel="noopener noreferrer">Follow us for the latest updates <img alt="Linked In icon" src="${escapeHtml(SIGNATURE.linkedinIcon)}" width="auto" height="15" style="height:15px;vertical-align:bottom" /></a></p>`
+    + `</td></tr></tbody></table>`;
 }
 
 // A signature the person pasted wins over the standard one. It was cleaned on
 // save and is cleaned again here, in case the rules got stricter since.
 function signatureHtml(person) {
   if (person.signatureHtml) return cleanSignature(person.signatureHtml);
-  const link = 'color:#1a73e8;text-decoration:none';
-  const muted = 'color:#5f6368';
-  const logo = env.COMPANY_LOGO_URL
-    ? `<img src="${escapeHtml(env.COMPANY_LOGO_URL)}" alt="${escapeHtml(env.COMPANY_NAME)}" width="140" style="display:block;width:140px;height:auto;border:0">`
-    : `<span style="font-size:24px;font-weight:bold;color:#1f2a44;letter-spacing:-0.5px">${escapeHtml(env.COMPANY_NAME)}</span>`;
-
-  const contact = [
-    person.phone ? `<span style="${muted}">${escapeHtml(person.phone)}</span>` : '',
-    `<a href="mailto:${escapeHtml(person.email)}" style="${link}">${escapeHtml(person.email)}</a>`,
-  ]
-    .filter(Boolean)
-    .join(`<span style="${muted}"> &bull; </span>`);
-
-  const designation = designationOf(person);
-
-  return `
-<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin-top:4px;font-family:Arial,Helvetica,sans-serif">
-  <tr>
-    <td style="padding:6px 18px 6px 0;vertical-align:middle">${logo}</td>
-    <td style="padding:6px 0 6px 18px;border-left:1px solid #dadce0;vertical-align:top">
-      <div style="font-size:15px;color:#202124">${escapeHtml(person.name)}</div>
-      ${designation ? `<div style="font-size:12px;${muted};margin-top:2px">${escapeHtml(designation)}</div>` : ''}
-      <div style="font-size:13px;margin-top:8px">${contact}</div>
-      <div style="font-size:13px;margin-top:6px">
-        <a href="${escapeHtml(env.COMPANY_TRIAL_URL)}" style="${link}">Free trial</a><span style="${muted}"> &bull; </span><a href="${escapeHtml(env.COMPANY_DEMO_URL)}" style="${link}">Watch a demo</a>
-      </div>
-      <div style="font-size:13px;${muted};margin-top:6px">
-        Follow us for the latest updates
-        <a href="${escapeHtml(env.COMPANY_LINKEDIN_URL)}" style="color:#0a66c2;font-weight:bold;text-decoration:none">LinkedIn</a>
-      </div>
-    </td>
-  </tr>
-</table>`;
+  return standardSignatureHtml(person);
 }
 
 function signatureText(person) {
   if (person.signatureHtml) return signatureToText(person.signatureHtml);
   return [
-    env.COMPANY_NAME,
     person.name,
-    designationOf(person),
+    roleLine(person),
     [person.phone, person.email].filter(Boolean).join(' • '),
-    `Free trial: ${env.COMPANY_TRIAL_URL}`,
-    `Watch a demo: ${env.COMPANY_DEMO_URL}`,
-    `LinkedIn: ${env.COMPANY_LINKEDIN_URL}`,
+    `Free trial: ${SIGNATURE.trialUrl}`,
+    `Watch a demo: ${SIGNATURE.demoUrl}`,
+    `Follow us for the latest updates: ${SIGNATURE.linkedinUrl}`,
   ]
     .filter(Boolean)
     .join('\n');
