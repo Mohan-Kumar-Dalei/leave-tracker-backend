@@ -107,16 +107,34 @@ router.get('/', async (req, res) => {
     return found ? { name: found.name, email: found.email, invitedAt: found.createdAt } : null;
   };
 
+  // Every assistant manager a department has: the ones set on it, then anyone
+  // else there who is an admin or has the Assistant Manager designation (some
+  // were added as employees). Managers of any department are not counted.
+  const managerIds = new Set(departments.map((department) => String(department.manager ?? '')));
+  const assistantsOf = (department) => {
+    const set = department.admins.map((id) => byId.get(String(id))).filter(Boolean);
+    const others = people.filter(
+      (person) =>
+        sameName(person.department, department.name) &&
+        !managerIds.has(person.id) &&
+        !set.some((item) => item.id === person.id) &&
+        (person.role === 'admin' || /assistant\s*manager/i.test(person.designation ?? '')),
+    );
+    return [...set, ...others].filter((person) => !managerIds.has(person.id));
+  };
+
   res.json({
     company: { name: env.COMPANY_NAME, location: env.COMPANY_LOCATION },
     // A manager adds departments that they run themselves.
     you: { owner, name: req.user.name, id: req.user.id },
     departments: departments.map((department) => {
       const { admins, manager, ...rest } = department.toJSON();
+      const assistants = assistantsOf(department);
       return {
         ...rest,
         manager: byId.get(String(manager ?? '')) ?? null,
         lead: byId.get(String(admins[0] ?? '')) ?? null,
+        assistants,
         invited: { manager: pendingInvite(department, 'manager'), assistant: pendingInvite(department, 'assistant') },
         waiting: waiting.find((row) => String(row._id) === department.id)?.count ?? 0,
         people: people.filter((person) => sameName(person.department, department.name)).length,
