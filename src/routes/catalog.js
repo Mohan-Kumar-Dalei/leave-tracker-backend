@@ -154,9 +154,17 @@ router.get(
   },
 );
 
-// The weather at the office, for the sky on the dashboard.
-router.get('/weather', async (_req, res) => {
-  res.json(await currentWeather());
-});
+// The weather for the sky on the dashboard: at the office, or where the
+// person is when they chose to share their location.
+router.get(
+  '/weather',
+  validate({
+    query: z.object({ lat: z.coerce.number().min(-90).max(90).optional(), lon: z.coerce.number().min(-180).max(180).optional() }),
+  }),
+  async (req, res) => {
+    const { lat, lon } = req.valid.query;
+    res.json(await currentWeather({ latitude: lat, longitude: lon }));
+  },
+);
 
 export default router;

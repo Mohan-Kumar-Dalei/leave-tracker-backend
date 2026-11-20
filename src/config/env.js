@@ -43,7 +43,9 @@ const schema = z.object({
   // Used on the team page for people whose department is not set, and as the office.
   DEFAULT_DEPARTMENT: z.string().default('Content Integration'),
   COMPANY_LOCATION: z.string().default('Bhubaneswar'),
-  // Where the office is, for the live weather on the dashboard's sky.
+  // Where the office is, for the live weather on the dashboard's sky (used
+  // unless someone shares their own location).
+  OFFICE_PLACE: z.string().default('Bhubaneswar, Odisha'),
   OFFICE_LATITUDE: z.coerce.number().min(-90).max(90).default(20.2961),
   OFFICE_LONGITUDE: z.coerce.number().min(-180).max(180).default(85.8245),
 

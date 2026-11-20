@@ -5,7 +5,7 @@ process.env.NODE_ENV = 'test';
 process.env.JWT_ACCESS_SECRET ??= 'test-secret-test-secret-test-secret-1234';
 process.env.MONGO_URI ??= 'mongodb://localhost:27017/';
 
-const { skyFor, currentWeather } = await import('../src/services/weather.js');
+const { skyFor, currentWeather, placeFor } = await import('../src/services/weather.js');
 
 describe('office weather', () => {
   it('turns weather codes into the skies the dashboard draws', () => {
@@ -19,6 +19,11 @@ describe('office weather', () => {
     assert.equal(skyFor(95).sky, 'thunder');
     assert.equal(skyFor(99).label, 'Thunderstorm with hail');
     assert.equal(skyFor(1234).sky, 'partly', 'an unknown code still draws a sky');
+  });
+
+  it('uses the office unless a location is shared, and rounds a shared one', () => {
+    assert.deepEqual(placeFor(), { latitude: 20.2961, longitude: 85.8245, name: 'Bhubaneswar, Odisha', own: false });
+    assert.deepEqual(placeFor(28.61394, 77.20902), { latitude: 28.6, longitude: 77.2, name: 'Your location', own: true });
   });
 
   it('never calls out from the tests', async () => {
