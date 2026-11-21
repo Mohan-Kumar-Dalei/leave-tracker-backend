@@ -1648,14 +1648,30 @@ describe('who may change whom', () => {
     await salesBoss.patch(`/api/org/departments/${empty.id}`).send({ manager: sales.manager.id }).expect(200);
   });
 
-  it('keeps leave types and holidays for managers to change', async () => {
+  it('lets assistant managers add leave types and holidays, and managers change them', async () => {
     const { manager, assistant } = await team('Ops');
     const am = await signIn(assistant);
     await am.get('/api/leave-types').expect(200);
+    // An AM adds to the lists...
+    const { body: added } = await am.post('/api/holidays').send({ name: 'Raja', date: '2031-06-14' }).expect(201);
+    const { body: made } = await am
+      .post('/api/leave-types')
+      .send({ name: 'Marriage Leave', code: 'ml', annualQuota: 3, description: 'For your own wedding.' })
+      .expect(201);
+    assert.equal(made.leaveType.code, 'ML');
+    assert.ok(made.leaveType.order > (casual.order ?? 0));
+    await am.post('/api/leave-types').send({ name: 'Again', code: 'ML', annualQuota: 1 }).expect(409);
+    // ...but does not change or remove what is there.
     await am.patch(`/api/leave-types/${casual.id}`).send({ annualQuota: 99 }).expect(403);
-    await am.post('/api/holidays').send({ name: 'Made up', date: '2031-05-05' }).expect(403);
+    await am.patch(`/api/holidays/${added.holiday.id}`).send({ name: 'Raja Parba' }).expect(403);
+    await am.delete(`/api/holidays/${added.holiday.id}`).expect(403);
+    // An employee adds nothing.
+    const someone = await signIn(await makeUser({ department: 'Ops' }));
+    await someone.post('/api/holidays').send({ name: 'Made up', date: '2031-05-05' }).expect(403);
+    await someone.post('/api/leave-types').send({ name: 'Made up', code: 'MU', annualQuota: 9 }).expect(403);
     const boss = await signIn(manager);
     const { body } = await boss.post('/api/holidays').send({ name: 'Founders Day', date: '2031-05-05' }).expect(201);
+    await boss.patch(`/api/holidays/${added.holiday.id}`).send({ name: 'Raja Parba' }).expect(200);
     await boss.delete(`/api/holidays/${body.holiday.id}`).expect(204);
   });
 });

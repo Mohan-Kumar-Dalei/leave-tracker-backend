@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import env from '../config/env.js';
-import { requireOrganiser } from '../middleware/auth.js';
+import { requireAdmin, requireOrganiser } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import Holiday from '../models/Holiday.js';
 import Leave, { ACTIVE_STATUSES } from '../models/Leave.js';
@@ -14,8 +14,9 @@ import { day, idParams, year } from '../utils/schemas.js';
 
 const router = Router();
 
-// Leave types and the holiday list are the same for the whole company, so
-// only managers change them; everyone reads them.
+// Leave types and the holiday list are the same for the whole company:
+// everyone reads them, any admin (a manager or an assistant manager) and HR
+// can add to them, and only managers and HR change or remove what is there.
 
 const leaveTypeBody = {
   name: z.string().trim().min(2).max(60),
@@ -36,10 +37,19 @@ router.get('/leave-types', async (req, res) => {
 
 router.post(
   '/leave-types',
-  requireOrganiser,
+  requireAdmin,
   validate({ body: z.strictObject(leaveTypeBody) }),
   async (req, res) => {
-    const leaveType = await LeaveType.create(req.valid.body);
+    const fields = { ...req.valid.body, code: req.valid.body.code.toUpperCase() };
+    if (await LeaveType.exists({ code: fields.code })) {
+      throw conflict('A leave type with that code already exists.');
+    }
+    // A new type goes after the ones already listed.
+    if (fields.order === undefined) {
+      const last = await LeaveType.findOne().sort({ order: -1 }).select('order');
+      fields.order = (last?.order ?? 0) + 1;
+    }
+    const leaveType = await LeaveType.create(fields);
     res.status(201).json({ leaveType });
   },
 );
@@ -78,7 +88,7 @@ router.get(
 
 router.post(
   '/holidays',
-  requireOrganiser,
+  requireAdmin,
   validate({ body: z.strictObject(holidayBody) }),
   async (req, res) => {
     const { date, ...rest } = req.valid.body;
