@@ -2,6 +2,7 @@ import env from './config/env.js';
 import { connectDb, disconnectDb } from './config/db.js';
 import { createApp } from './app.js';
 import { syncDepartments } from './services/departments.js';
+import { syncPendingUsers } from './services/pendingUsers.js';
 import { closeAllStreams } from './services/events.js';
 
 async function start() {
@@ -10,6 +11,10 @@ async function start() {
   // Everyone belongs to a department and each department knows who runs it,
   // so leave goes to the right person from the first request.
   await syncDepartments();
+  // People who registered and are waiting for approval are in the users
+  // collection too (pending, no access); this adds anyone from before.
+  const waiting = await syncPendingUsers();
+  if (waiting) console.log(`Added ${waiting} people waiting for approval to the users collection`);
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {

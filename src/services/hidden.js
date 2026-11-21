@@ -5,7 +5,9 @@ import User from '../models/User.js';
 // the employee list, the team calendar, the team's upcoming and past leave,
 // the admin overview and requests, the CSV export and the To/CC names.
 
-export const notHidden = { hidden: { $ne: true } };
+// People still waiting for approval, or turned down, are in the users
+// collection too, but not in the app's lists of people.
+export const notHidden = { hidden: { $ne: true }, approval: { $nin: ['pending', 'rejected'] } };
 
 export async function hiddenUserIds() {
   const users = await User.find({ hidden: true }).select('_id');

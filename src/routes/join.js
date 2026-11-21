@@ -16,6 +16,7 @@ import {
 } from '../services/appPassword.js';
 import { createWithNextId, nextEmployeeId } from '../services/employeeIds.js';
 import { notifyUsers } from '../services/notify.js';
+import { linkPendingUser } from '../services/pendingUsers.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http.js';
 import { email, password, phone } from '../utils/schemas.js';
 
@@ -49,9 +50,12 @@ async function openInvite(value) {
 // Employee IDs are given automatically (the next CON number), so only the
 // email has to be new.
 async function assertFree({ email: address }) {
-  if (await User.exists({ email: address })) throw conflict('That email already has an account. Sign in instead.');
   if (await JoinRequest.exists({ status: 'pending', email: address })) {
     throw conflict('A request with that email is already waiting for approval.');
+  }
+  // Someone turned down before may ask again; anyone else with the email has an account.
+  if (await User.exists({ email: address, approval: { $ne: 'rejected' } })) {
+    throw conflict('That email already has an account. Sign in instead.');
   }
 }
 
@@ -123,6 +127,7 @@ router.post(
         designation: 'Manager',
         passwordHash,
       });
+      await linkPendingUser(request);
       res.status(201).json({ pending: true, department: request.departmentName });
 
       const managers = await Department.distinct('manager', { manager: { $ne: null } });
@@ -269,6 +274,7 @@ router.post(
       designation: body.designation ?? '',
       passwordHash: await bcrypt.hash(body.password, BCRYPT_COST),
     });
+    await linkPendingUser(request);
 
     res.status(201).json({ department: department.name });
 

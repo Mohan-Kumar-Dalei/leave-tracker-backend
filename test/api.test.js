@@ -19,6 +19,7 @@ const { default: Department } = await import('../src/models/Department.js');
 const { default: Holiday } = await import('../src/models/Holiday.js');
 const { default: ImportedUsage } = await import('../src/models/ImportedUsage.js');
 const { default: Leave } = await import('../src/models/Leave.js');
+const { default: JoinRequest } = await import('../src/models/JoinRequest.js');
 const { default: LeaveType } = await import('../src/models/LeaveType.js');
 const { default: User } = await import('../src/models/User.js');
 const { parseDay } = await import('../src/utils/dates.js');
@@ -1138,6 +1139,10 @@ describe('organisation', () => {
     const amit = { name: 'Amit Rout', email: 'amit@example.com', designation: 'Analyst', password: 'amit-pass-123' };
     await request(app).post(`/api/join/${code}`).send(amit).expect(201);
     await request(app).post(`/api/join/${code}`).send(amit).expect(409);
+    // In the users collection at once, with their email, waiting for approval.
+    const waitingUser = await User.findOne({ email: amit.email });
+    assert.deepEqual([waitingUser.approval, waitingUser.isActive, waitingUser.department], ['pending', false, '3PP']);
+    assert.match(waitingUser.employeeId, /^REQ-/);
     // Not an account until approved.
     await request(app).post('/api/auth/login').send({ email: amit.email, password: amit.password }).expect(401);
 
@@ -1149,6 +1154,11 @@ describe('organisation', () => {
     assert.equal(waiting.length, 1);
     const approved = await sita.post(`/api/departments/${dept.id}/requests/${waiting[0].id}/approve`).expect(200);
     await request(app).post('/api/auth/login').send({ email: amit.email, password: amit.password }).expect(200);
+    // The same user, now approved with a CON employee ID.
+    assert.equal(approved.body.person.id, waitingUser.id);
+    const nowUser = await User.findById(waitingUser.id);
+    assert.deepEqual([nowUser.approval, nowUser.isActive], ['approved', true]);
+    assert.match(nowUser.employeeId, /^CON-\d+$/);
 
     // The team reports to the assistant manager, as in Content Integration.
     assert.equal(String((await User.findById(approved.body.person.id)).reportsTo), sitaId);
@@ -1348,6 +1358,8 @@ describe('registering on your own', () => {
     const rajesh = { name: 'Rajesh Swain', email: 'rajesh@example.com', department: 'content integration', password: 'rajesh-pass-123' };
     const asked = await request(app).post('/api/join/manager').send(rajesh).expect(201);
     assert.equal(asked.body.pending, true);
+    const waitingManager = await User.findOne({ email: rajesh.email });
+    assert.deepEqual([waitingManager.approval, waitingManager.isActive, waitingManager.designation], ['pending', false, 'Manager']);
     await request(app).post('/api/auth/login').send({ email: rajesh.email, password: rajesh.password }).expect(401);
     org = (await ravi.get('/api/org').expect(200)).body;
     assert.equal(org.managerRequests.length, 1);
@@ -1645,5 +1657,51 @@ describe('who may change whom', () => {
     const boss = await signIn(manager);
     const { body } = await boss.post('/api/holidays').send({ name: 'Founders Day', date: '2031-05-05' }).expect(201);
     await boss.delete(`/api/holidays/${body.holiday.id}`).expect(204);
+  });
+});
+
+describe('everyone who registers is in the users collection', () => {
+  beforeEach(async () => {
+    await Department.init();
+    await Department.deleteMany({});
+  });
+
+  it('keeps people waiting or turned down out of the app, and lets them ask again', async () => {
+    const boss = await makeUser({ role: 'admin', name: 'Ops Manager', department: 'Ops', designation: 'Manager' });
+    const ops = await Department.create({ name: 'Ops', manager: boss._id, joinCode: 'opsjoin1234' });
+    const manager = await signIn(boss);
+    const nina = { name: 'Nina Das', email: 'nina@example.com', designation: 'Analyst', password: 'nina-pass-123' };
+    await request(app).post('/api/join/opsjoin1234').send(nina).expect(201);
+
+    // In the collection, but in no list of people and not signed in.
+    const waiting = await User.findOne({ email: nina.email });
+    assert.equal(waiting.approval, 'pending');
+    const everyone = (await manager.get('/api/admin/employees?status=all').expect(200)).body.items;
+    assert.ok(!everyone.some((person) => person.email === nina.email));
+    const team = (await manager.get('/api/team').expect(200)).body.members;
+    assert.ok(!team.some((person) => person.name === 'Nina Das'));
+    await request(app).post('/api/auth/login').send({ email: nina.email, password: nina.password }).expect(401);
+
+    // Turned down: still there, marked so.
+    const requests = (await manager.get(`/api/departments/${ops.id}`).expect(200)).body.requests;
+    await manager.post(`/api/departments/${ops.id}/requests/${requests[0].id}/reject`).expect(204);
+    const rejected = await User.findOne({ email: nina.email });
+    assert.deepEqual([rejected.approval, rejected.isActive], ['rejected', false]);
+
+    // They may ask again, and the same record waits again.
+    await request(app).post('/api/join/opsjoin1234').send(nina).expect(201);
+    const again = await User.findOne({ email: nina.email });
+    assert.deepEqual([again.id, again.approval], [waiting.id, 'pending']);
+    assert.equal(await User.countDocuments({ email: nina.email }), 1);
+  });
+
+  it('adds people who were already waiting', async () => {
+    const { syncPendingUsers } = await import('../src/services/pendingUsers.js');
+    const ops = await Department.create({ name: 'Ops' });
+    const old = await JoinRequest.create({ department: ops._id, name: 'Old Request', email: 'old@example.com', passwordHash: 'x' });
+    assert.equal(await syncPendingUsers(), 1);
+    assert.equal(await syncPendingUsers(), 0, 'safe to run again');
+    const user = await User.findOne({ email: 'old@example.com' });
+    assert.deepEqual([user.approval, user.isActive, user.department, String((await JoinRequest.findById(old.id)).user)], ['pending', false, 'Ops', user.id]);
   });
 });

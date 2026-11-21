@@ -8,7 +8,7 @@ import { randomToken, sha256 } from './tokens.js';
 
 // People who belong to departments: everyone but the owner and the hidden
 // test accounts.
-export const memberFilter = { role: { $ne: 'owner' }, hidden: { $ne: true } };
+export const memberFilter = { role: { $ne: 'owner' }, hidden: { $ne: true }, approval: { $nin: ['pending', 'rejected'] } };
 
 export const CASE_INSENSITIVE = { locale: 'en', strength: 2 };
 

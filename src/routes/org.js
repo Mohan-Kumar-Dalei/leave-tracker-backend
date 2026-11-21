@@ -18,6 +18,7 @@ import {
   syncRoles,
 } from '../services/departments.js';
 import { createWithNextId } from '../services/employeeIds.js';
+import { approvePendingUser, rejectPendingUser } from '../services/pendingUsers.js';
 import { sendMail } from '../services/mail.js';
 import { approvedMail, inviteMail, inviteUrl } from '../services/orgMail.js';
 import { departmentOf, peopleIn, rankOf } from '../services/scope.js';
@@ -175,12 +176,12 @@ router.post('/manager-requests/:id/approve', validate({ params: idParams }), asy
   // gets this person as its manager; one with a manager cannot be taken.
   const existing = await findByName(request.departmentName);
   if (existing?.manager) throw conflict(`${existing.name} already has a manager.`);
-  if (await User.exists({ email: request.email })) throw conflict('Someone with that email already has an account.');
+  if (await User.exists({ email: request.email, approval: 'approved' })) throw conflict('Someone with that email already has an account.');
 
-  const user = await createWithNextId({
+  // Their waiting user becomes their account, with the next CON employee ID.
+  const user = await approvePendingUser(request, {
     name: request.name,
-    email: request.email,
-    phone: request.phone || undefined,
+    phone: request.phone || '',
     designation: 'Manager',
     department: existing?.name ?? request.departmentName,
     role: 'admin',
@@ -214,6 +215,7 @@ router.post('/manager-requests/:id/approve', validate({ params: idParams }), asy
 
 router.post('/manager-requests/:id/reject', validate({ params: idParams }), async (req, res) => {
   const request = await pendingManagerRequest(req.valid.params.id);
+  await rejectPendingUser(request);
   request.status = 'rejected';
   request.decidedBy = req.user._id;
   request.decidedAt = new Date();

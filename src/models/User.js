@@ -30,6 +30,10 @@ const userSchema = new mongoose.Schema(
     avatarFileId: { type: String, default: '', select: false },
     joinedOn: { type: Date },
     isActive: { type: Boolean, default: true, index: true },
+    // Everyone who registers is saved here at once: 'pending' until a manager
+    // approves them (no password, access off), 'rejected' if turned down.
+    // People added by a manager are approved from the start.
+    approval: { type: String, enum: ['approved', 'pending', 'rejected'], default: 'approved', index: true },
     // A test account: it works, but is left out of every list others see.
     hidden: { type: Boolean, default: false, index: true },
     // Who this person reports to, for the department tree and "Reporting to".

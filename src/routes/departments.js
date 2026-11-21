@@ -20,6 +20,7 @@ import {
 } from '../services/departments.js';
 import { saveSealedAppPassword } from '../services/appPassword.js';
 import { createWithNextId } from '../services/employeeIds.js';
+import { approvePendingUser, rejectPendingUser } from '../services/pendingUsers.js';
 import { sendMail } from '../services/mail.js';
 import { notifyUsers } from '../services/notify.js';
 import { approvedMail, inviteMail, inviteUrl, joinLinkMail, joinUrl } from '../services/orgMail.js';
@@ -173,13 +174,12 @@ async function pendingRequest(department, requestId) {
 router.post('/:id/requests/:requestId/approve', validate({ params: requestParams }), async (req, res) => {
   const department = await managed(req, req.valid.params.id);
   const request = await pendingRequest(department, req.valid.params.requestId);
-  if (await User.exists({ email: request.email })) throw conflict('Someone with that email already has an account.');
+  if (await User.exists({ email: request.email, approval: 'approved' })) throw conflict('Someone with that email already has an account.');
 
-  // They get the next employee ID in the company's CON series.
-  const user = await createWithNextId({
+  // Their waiting user becomes their account, with the next CON employee ID.
+  const user = await approvePendingUser(request, {
     name: request.name,
-    email: request.email,
-    phone: request.phone || undefined,
+    phone: request.phone || '',
     designation: request.designation,
     department: department.name,
     role: 'employee',
@@ -203,6 +203,7 @@ router.post('/:id/requests/:requestId/approve', validate({ params: requestParams
 router.post('/:id/requests/:requestId/reject', validate({ params: requestParams }), async (req, res) => {
   const department = await managed(req, req.valid.params.id);
   const request = await pendingRequest(department, req.valid.params.requestId);
+  await rejectPendingUser(request);
   request.status = 'rejected';
   request.decidedBy = req.user._id;
   request.decidedAt = new Date();
