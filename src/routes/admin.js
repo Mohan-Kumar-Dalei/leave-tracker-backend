@@ -27,7 +27,12 @@ import { range } from '../services/mailTemplates.js';
 import { notHidden } from '../services/hidden.js';
 import { broadcastChange, getActiveAdmins, notifyUsers } from '../services/notify.js';
 import { canReview, departmentOf, inScope, leaveOwnersIn, peopleIn, rankOf, reviewersFor, scopeOf } from '../services/scope.js';
-import Department from '../models/Department.js';
+import Department, { refreshPositions } from '../models/Department.js';
+import JoinRequest from '../models/JoinRequest.js';
+import Notification from '../models/Notification.js';
+import OrgInvite from '../models/OrgInvite.js';
+import RefreshToken from '../models/RefreshToken.js';
+import { deleteFile } from '../services/imagekit.js';
 import { revokeAllSessions } from '../services/tokens.js';
 import { addDays, monthRange, parseDay, toDayString, todayString, yearRange } from '../utils/dates.js';
 import {
@@ -68,7 +73,9 @@ router.use('/employees/:id', async (req, _res, next) => {
     if (person && (person.role === 'owner' || !(await inScope(req.scope, person)))) {
       return next(notFound('That employee was not found.'));
     }
-    if (person && !READ_ONLY.has(req.method) && person.id !== req.user.id) {
+    // Deleting someone has its own rule (see the delete route below).
+    const deleting = req.method === 'DELETE' && req.path === '/';
+    if (person && !deleting && !READ_ONLY.has(req.method) && person.id !== req.user.id) {
       const [mine, theirs] = await Promise.all([rankOf(req.user), rankOf(person)]);
       if (mine <= theirs) return next(forbidden('Only someone above this person can change them.'));
     }
@@ -565,8 +572,10 @@ router.get(
 
     // Whether the viewer may change this person (see the guard above), so
     // the page shows its buttons only when they would work.
-    const canChange = user.id === req.user.id || (await rankOf(req.user)) > (await rankOf(user));
-    res.json({ user, year: selectedYear, balances, monthly, adjustments, recent, recorded, canChange });
+    const [mine, theirs] = await Promise.all([rankOf(req.user), rankOf(user)]);
+    const canChange = user.id === req.user.id || mine > theirs;
+    const canDelete = mayDelete(req.user, user, mine, theirs);
+    res.json({ user, year: selectedYear, balances, monthly, adjustments, recent, recorded, canChange, canDelete });
   },
 );
 
@@ -612,6 +621,54 @@ router.patch(
     res.json({ user: target });
   },
 );
+
+// Deleting someone for good, for managers and assistant managers: an
+// assistant manager deletes people in their team, a manager deletes assistant
+// managers, the team and other managers. Nobody deletes themselves.
+function mayDelete(me, person, mine, theirs) {
+  if (me.id === person.id || mine < 1) return false;
+  return mine > theirs || (mine === 2 && theirs === 2);
+}
+
+// Removes the account and everything that was only theirs: their leave,
+// balance changes, notifications, sign-ins, invitations and join requests.
+// Departments they ran are left without them, and anyone who reported to
+// them reports to nobody until someone is chosen. Leave they decided for
+// others stays as it was.
+router.delete('/employees/:id', validate({ params: idParams }), async (req, res) => {
+  const target = await User.findById(req.valid.params.id).select('+avatarFileId');
+  if (!target) throw notFound('That employee was not found.');
+  if (target.id === req.user.id) throw conflict('You cannot delete yourself.');
+  const [mine, theirs] = await Promise.all([rankOf(req.user), rankOf(target)]);
+  if (!mayDelete(req.user, target, mine, theirs)) throw forbidden('Only someone above this person can delete them.');
+  if (target.role === 'admin' && target.isActive) {
+    const admins = await getActiveAdmins();
+    if (admins.length <= 1) throw conflict('Keep at least one active admin.');
+  }
+
+  const id = target._id;
+  await revokeAllSessions(id);
+  await Promise.all([
+    Leave.deleteMany({ user: id }),
+    BalanceAdjustment.deleteMany({ user: id }),
+    ImportedUsage.deleteMany({ user: id }),
+    Notification.deleteMany({ recipient: id }),
+    RefreshToken.deleteMany({ user: id }),
+    AppPasswordLink.deleteMany({ user: id }),
+    JoinRequest.deleteMany({ $or: [{ user: id }, { email: target.email }] }),
+    OrgInvite.deleteMany({ $or: [{ user: id }, { email: target.email }] }),
+    Department.updateMany({ manager: id }, { $set: { manager: null } }),
+    Department.updateMany({ admins: id }, { $pull: { admins: id } }),
+    User.updateMany({ reportsTo: id }, { $set: { reportsTo: null } }),
+    User.updateMany({ leaveReportTo: id }, { $set: { leaveReportTo: null } }),
+  ]);
+  if (target.avatarFileId) await deleteFile(target.avatarFileId);
+  await target.deleteOne();
+  await refreshPositions();
+
+  res.status(204).end();
+  broadcastChange();
+});
 
 const adjustmentDays = z.coerce
   .number()

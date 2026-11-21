@@ -1648,6 +1648,38 @@ describe('who may change whom', () => {
     await salesBoss.patch(`/api/org/departments/${empty.id}`).send({ manager: sales.manager.id }).expect(200);
   });
 
+  it('lets managers and assistant managers delete people below them, and managers other managers', async () => {
+    const { default: Notification } = await import('../src/models/Notification.js');
+    const { manager, assistant, member, department } = await team('Ops');
+    const other = await team('Sales');
+    const am = await signIn(assistant);
+    const boss = await signIn(manager);
+    // The page says who may delete whom.
+    assert.equal((await am.get(`/api/admin/employees/${member.id}`).expect(200)).body.canDelete, true);
+    assert.equal((await am.get(`/api/admin/employees/${manager.id}`).expect(200)).body.canDelete, false);
+    // An AM cannot delete their manager, or themselves.
+    await am.delete(`/api/admin/employees/${manager.id}`).expect(403);
+    await am.delete(`/api/admin/employees/${assistant.id}`).expect(409);
+    // An employee cannot delete anyone.
+    const someone = await signIn(member);
+    await someone.delete(`/api/admin/employees/${assistant.id}`).expect(403);
+
+    // The member goes, with everything that was only theirs.
+    await User.updateOne({ _id: assistant._id }, { reportsTo: member._id });
+    await Notification.create({ recipient: member._id, kind: 'balance', title: 'Hi', body: '', link: '/' });
+    await am.delete(`/api/admin/employees/${member.id}`).expect(204);
+    assert.equal(await User.exists({ _id: member._id }), null);
+    assert.equal(await Notification.countDocuments({ recipient: member._id }), 0);
+    assert.equal((await User.findById(assistant._id)).reportsTo, null);
+
+    // A manager deletes their AM, and another manager.
+    await boss.delete(`/api/admin/employees/${assistant.id}`).expect(204);
+    assert.deepEqual((await Department.findById(department._id)).admins, []);
+    await boss.delete(`/api/admin/employees/${other.manager.id}`).expect(204);
+    assert.equal((await Department.findById(other.department._id)).manager, null);
+    await boss.delete(`/api/admin/employees/${manager.id}`).expect(409);
+  });
+
   it('lets assistant managers add leave types and holidays, and managers change them', async () => {
     const { manager, assistant } = await team('Ops');
     const am = await signIn(assistant);
@@ -1719,5 +1751,28 @@ describe('everyone who registers is in the users collection', () => {
     assert.equal(await syncPendingUsers(), 0, 'safe to run again');
     const user = await User.findOne({ email: 'old@example.com' });
     assert.deepEqual([user.approval, user.isActive, user.department, String((await JoinRequest.findById(old.id)).user)], ['pending', false, 'Ops', user.id]);
+  });
+
+  it('fills in every detail of people added by hand or before a field existed', async () => {
+    const { completeUsers } = await import('../src/services/pendingUsers.js');
+    const ops = await Department.create({ name: 'Ops' });
+    // Saved straight into the collection with only a few fields, like an old import.
+    await User.collection.insertOne({ name: 'Bare Person', email: 'bare@example.com', employeeId: 'CON-900', role: 'employee' });
+    const bare = await User.findOne({ email: 'bare@example.com' });
+    await JoinRequest.create({
+      department: ops._id, name: 'Bare Person', email: 'bare@example.com', phone: '9876543210',
+      designation: 'Analyst', status: 'approved', user: bare._id,
+    });
+    const kept = await makeUser({ name: 'Kept', designation: 'Lead', phone: '1112223334', department: 'Ops' });
+    assert.ok((await completeUsers()) >= 1);
+    const raw = await User.collection.findOne({ _id: bare._id });
+    for (const field of ['position', 'department', 'designation', 'phone', 'signatureHtml', 'avatarUrl', 'isActive', 'approval', 'hidden', 'reportsTo', 'leaveReportTo', 'teamLead', 'workFromHome', 'joinedOn']) {
+      assert.ok(field in raw, `${field} is shown`);
+    }
+    assert.deepEqual([raw.phone, raw.designation, raw.department, raw.approval, raw.isActive], ['9876543210', 'Analyst', 'Ops', 'approved', true]);
+    // What was already there is left alone.
+    const same = await User.collection.findOne({ _id: kept._id });
+    assert.deepEqual([same.designation, same.phone], ['Lead', '1112223334']);
+    assert.equal(await completeUsers(), 0, 'safe to run again');
   });
 });

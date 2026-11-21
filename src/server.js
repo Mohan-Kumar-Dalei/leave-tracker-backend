@@ -2,7 +2,7 @@ import env from './config/env.js';
 import { connectDb, disconnectDb } from './config/db.js';
 import { createApp } from './app.js';
 import { syncDepartments } from './services/departments.js';
-import { syncPendingUsers } from './services/pendingUsers.js';
+import { completeUsers, syncPendingUsers } from './services/pendingUsers.js';
 import { closeAllStreams } from './services/events.js';
 
 async function start() {
@@ -15,6 +15,9 @@ async function start() {
   // collection too (pending, no access); this adds anyone from before.
   const waiting = await syncPendingUsers();
   if (waiting) console.log(`Added ${waiting} people waiting for approval to the users collection`);
+  // Every person's document carries every detail (older ones were short).
+  const filled = await completeUsers();
+  if (filled) console.log(`Filled in the details of ${filled} people in the users collection`);
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {

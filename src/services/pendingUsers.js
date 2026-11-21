@@ -1,4 +1,4 @@
-import Department from '../models/Department.js';
+import Department, { refreshPositions } from '../models/Department.js';
 import JoinRequest from '../models/JoinRequest.js';
 import User from '../models/User.js';
 import { nextEmployeeId } from './employeeIds.js';
@@ -90,4 +90,60 @@ export async function syncPendingUsers() {
     if (user && !before) added += 1;
   }
   return added;
+}
+
+// Every person's document shows every detail, so the users collection reads
+// the same for everyone in the database: people added by hand, managers who
+// registered, and accounts made before a field existed (MongoDB stores only
+// the fields a document was saved with, so older ones look short). Each
+// missing field gets its empty value (an empty text, false, or none), and
+// what someone gave when they registered (phone, designation, department) is
+// copied over where their account has nothing. Nothing that is already set
+// is changed. Safe to run every time; returns how many people were filled in.
+const EMPTY_AFTER_ALL = ['joinedOn'];
+
+export async function completeUsers() {
+  const touched = new Set();
+  const note = async (filter, update) => {
+    const ids = await User.find(filter).distinct('_id');
+    if (!ids.length) return;
+    ids.forEach((id) => touched.add(String(id)));
+    await User.updateMany({ _id: { $in: ids } }, update);
+  };
+
+  // Fields with a default in the schema: give it to anyone without the field.
+  for (const [field, path] of Object.entries(User.schema.paths)) {
+    if (field === '_id' || field === '__v' || path.options?.select === false) continue;
+    if (!('default' in (path.options ?? {}))) continue;
+    const value = typeof path.options.default === 'function' ? path.options.default() : path.options.default;
+    if (value === undefined) continue;
+    await note({ [field]: { $exists: false } }, { $set: { [field]: value } });
+  }
+  // Fields with no default: shown as empty (none yet) rather than missing.
+  for (const field of EMPTY_AFTER_ALL) {
+    await note({ [field]: { $exists: false } }, { $set: { [field]: null } });
+  }
+
+  // What people gave when they registered, where their account has nothing.
+  const requests = await JoinRequest.find({ status: 'approved' }).populate('department', 'name');
+  for (const request of requests) {
+    const filter = request.user ? { _id: request.user } : { email: request.email.toLowerCase() };
+    const user = await User.findOne(filter).select('phone designation department');
+    if (!user) continue;
+    const fill = {};
+    if (!user.phone && request.phone) fill.phone = request.phone;
+    if (!user.designation && (request.designation || request.kind === 'manager')) {
+      fill.designation = request.designation || 'Manager';
+    }
+    const department = request.kind === 'manager' ? request.departmentName : request.department?.name;
+    if (!user.department && department) fill.department = department;
+    if (Object.keys(fill).length) {
+      touched.add(String(user._id));
+      await User.updateOne({ _id: user._id }, { $set: fill });
+    }
+  }
+
+  // Manager, assistant manager or employee, from the departments.
+  await refreshPositions();
+  return touched.size;
 }
